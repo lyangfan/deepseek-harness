@@ -13,20 +13,33 @@ import { canonicalJson } from './canonical-json.ts'
 import { completionBoundary, foldCaptures, resolveSelection, validateSuffix } from './capture.ts'
 import type { CaptureSelection } from './capture.ts'
 import { compileSnapshot, COMPILER_REVISION } from './compiler.ts'
+import { materialSnapshotFor } from './materialize.ts'
 import { collectEvidenceGarbage } from './gc.ts'
 import { recoverCurrentHeads } from './recovery.ts'
 import { EvidenceStore, EvidenceStoreError } from './store.ts'
 import type { CompileOutbox } from './schema.ts'
+import { ArtifactProvider } from './artifact.ts'
+import { AcceptanceLane } from './acceptance.ts'
+import { RUNNER_PROVIDER_ID } from './receipt.ts'
+import { REGISTERED_CAPTURE_PROFILE_IDS } from './runner/profiles.ts'
+import { applySciRunCodeTool } from './runner/index.ts'
 
 export type * from './types.ts'
 export { canonicalDigest, canonicalJson, parseCanonicalJson, sha256Digest } from './canonical-json.ts'
-export { deriveEdgeId, deriveNodeId, deriveObservationId, deriveRunId, EvidenceEdgeId, EvidenceGraphId, EvidenceNodeId, EvidenceRunId, ObservationId, taggedSha256Digest } from './identity.ts'
-export { evidenceEdgeSchema, evidenceGraphScopeSchema, evidenceNodeSchema, evidenceSnapshotPayloadSchema, eventBackedRunPayloadSchema, sessionEventRefSchema, sha256DigestSchema, storedSnapshotSchema, toolResultObservationPayloadSchema } from './schema.ts'
+export { deriveEdgeId, deriveNodeId, deriveObservationId, deriveRunId, deriveArtifactNodeId, deriveContextNodeId, EvidenceEdgeId, EvidenceGraphId, EvidenceNodeId, EvidenceRunId, ObservationId, taggedSha256Digest } from './identity.ts'
+export { evidenceEdgeSchema, evidenceGraphScopeSchema, evidenceNodeSchema, evidenceSnapshotPayloadSchema, eventBackedRunPayloadSchema, receiptBackedRunPayloadSchema, artifactVersionNodePayloadSchema, contextEntityNodePayloadSchema, sessionEventRefSchema, sha256DigestSchema, storedSnapshotSchema, toolResultObservationPayloadSchema } from './schema.ts'
 export { verifySnapshot, verifyStoredSnapshot } from './integrity.ts'
 export { buildEvidenceExport, explicitSnapshotDigest, verifyEvidenceExport, writeEvidenceExport } from './export.ts'
+export { ArtifactProvider, ArtifactConflictError } from './artifact.ts'
+export { SourceAnchorOwner, AnchorError, REGISTERED_ANCHOR_KINDS, SOURCE_ANCHOR_VERIFIER_REVISION } from './anchor.ts'
+export { AcceptanceLane } from './acceptance.ts'
+export { ContextEntityOwner } from './context-entity.ts'
+export { persistReceiptSubmission, verifyReceiptComponents, meetsReceiptBackedMinimum, RECEIPT_SCHEMA_REVISION, RUNNER_PROVIDER_ID, RUNNER_PROVIDER_VERSION } from './receipt.ts'
+export { executeSciRunCode, RunnerInputError } from './runner/execute.ts'
+export { BASH_LANGUAGE_PROFILE, registeredProfile } from './runner/profiles.ts'
 
 export const name = 'evidence-core'
-export const inject = ['storageDomain', 'sessionPersistence', 'sessions']
+export const inject = ['storageDomain', 'sessionPersistence', 'sessions', 'fs', 'subprocess', 'tools']
 
 /** Exact, revisioned Tool-name rule used by the non-LLM compiler. */
 export interface DeterministicRunSelectionConfig {
@@ -36,7 +49,7 @@ export interface DeterministicRunSelectionConfig {
   readonly exactToolNames: string[]
 }
 
-/** Loader configuration for deterministic Evidence capture, publication, retry, and retention. */
+/** Loader configuration for deterministic Evidence capture, publication, retry, retention, and the SPEC-02 material layer. */
 export interface Config {
   /** Exact Agent preset ids whose Sessions may create Evidence state. */
   readonly eligibleAgentPresetIds: string[]
@@ -62,6 +75,18 @@ export interface Config {
   readonly maxRetryAttempts: number
   /** Delay before each successor attempt; length must equal maxRetryAttempts minus one. */
   readonly retryDelaysMs: number[]
+  /** Whether the declarative scientific-code Runner Tool is registered (SPEC-02 §11.1). */
+  readonly runnerEnabled: boolean
+  /** Parent directory of the run-exclusive Runner output directories (SPEC-02 §11.1). */
+  readonly runnerOutputRoot: string
+  /** Default Runner execution timeout in milliseconds. */
+  readonly runnerDefaultTimeoutMs: number
+  /** Maximum declared outputs accepted by one Runner call. */
+  readonly runnerMaxDeclaredOutputs: number
+  /** Per-stream captured log bound in bytes; overflow truncates and marks. */
+  readonly runnerLogCaptureMaxBytes: number
+  /** Maximum freshness-cache entries for ArtifactVersion hashing reuse. */
+  readonly materialHashCacheMaxEntries: number
 }
 
 export const Config: s<Config> = s.object({
@@ -77,6 +102,12 @@ export const Config: s<Config> = s.object({
   gcIntervalMs: s.natural().min(1).default(86_400_000),
   maxRetryAttempts: s.natural().min(1).default(5),
   retryDelaysMs: s.array(s.natural().min(1)).default([1_000, 2_000, 4_000, 8_000]),
+  runnerEnabled: s.boolean().default(true),
+  runnerOutputRoot: s.string().default('.evidence-runner-outputs'),
+  runnerDefaultTimeoutMs: s.natural().min(1).default(600_000),
+  runnerMaxDeclaredOutputs: s.natural().min(1).default(64),
+  runnerLogCaptureMaxBytes: s.natural().min(1).default(8_388_608),
+  materialHashCacheMaxEntries: s.natural().min(1).default(4_096),
 })
 
 interface HotSessionState {
@@ -136,6 +167,7 @@ class EvidenceRuntime {
     private readonly config: Config,
     private readonly selection: CaptureSelection,
     private readonly eligible: ReadonlySet<string>,
+    private readonly lane: AcceptanceLane | undefined,
   ) {}
 
   async start(): Promise<() => Promise<void>> {
@@ -143,6 +175,7 @@ class EvidenceRuntime {
     await recoverCurrentHeads(this.store)
     await this.store.reconcileAttempts()
     await this.scanCold()
+    if (this.lane !== undefined) await this.lane.recoverPending(header => this.isEligible(header))
     const stopEvent = this.ctx.on('session/event', (session, event) => { this.onEvent(session, event) }, { global: true })
     const stopCreated = this.ctx.on('session/created', (session) => { if (this.isEligible(session.header)) this.state(session.header) }, { global: true })
     const stopDisposed = this.ctx.on('session/disposed', (session) => {
@@ -268,6 +301,17 @@ class EvidenceRuntime {
 
   private async captureHeader(header: SessionHeader, cold: boolean): Promise<void> {
     if (!this.isEligible(header)) return
+    // §7.4: within one wake, acceptance processing precedes compilation, so a receipt whose
+    // result event just persisted is materialized by the same batch's compile attempt.
+    if (this.lane !== undefined && this.store.receiptLaneFor(header.id)?.pendingSubmissions.length) {
+      try {
+        await this.lane.processSession(header, cold)
+      } catch (error) {
+        if (!(error instanceof EvidenceStoreError) || (error.code !== 'flush_unavailable' && error.code !== 'read_temporary')) {
+          this.ctx.logger.warn(`evidence-core: receipt acceptance '${header.id}' failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    }
     const scope = await this.store.bootstrap(header, this.workspaceFor(header.id))
     const head = this.store.currentHead(scope.graphId)
     const from = this.store.snapshotWatermark(head.snapshotDigest)
@@ -367,6 +411,7 @@ class EvidenceRuntime {
           captures: this.store.capturesFor(row.graphId), baseSnapshotDigest: head.snapshotDigest,
           targetNextSeqExclusive: row.targetNextSeqExclusive, sourceTimeUpperBound: last.time,
           selectionRevision: this.selection.revision, selectionRuleDigest: this.selection.digest,
+          material: materialSnapshotFor(this.store, row.graphId),
         })
         if (this.shouldStop()) { await this.store.cancelAttempt(attempt); return }
         await this.store.commit(attempt, payload)
@@ -397,11 +442,32 @@ class EvidenceRuntime {
   }
 }
 
-/** Mount the private Evidence owner and its bounded Session listeners. */
+/** Mount the private Evidence owner, the SPEC-02 material layer, and the bounded Session listeners. */
 export async function apply(ctx: Context, input: Config): Promise<void> {
   const { config, selection, eligible } = resolveConfig(input)
   const store = await EvidenceStore.open(ctx)
-  const runtime = new EvidenceRuntime(ctx, store, config, selection, eligible)
+  store.hardLimitBytes = config.storageHardBytes
+  // §3.2: the material layer requires ctx.fs and the Runner additionally requires the
+  // subprocess service; both are declared in `inject`, so activation waits for them.
+  const artifacts = new ArtifactProvider(ctx, store)
+  const lane = new AcceptanceLane(ctx, store, {
+    providers: new Set([RUNNER_PROVIDER_ID]),
+    profiles: REGISTERED_CAPTURE_PROFILE_IDS,
+  })
+  const runtime = new EvidenceRuntime(ctx, store, config, selection, eligible, lane)
   const cleanup = await runtime.start()
   ctx.effect(() => cleanup, 'evidence-core.runtime()')
+  if (config.runnerEnabled) {
+    applySciRunCodeTool(ctx, {
+      store,
+      artifacts,
+      lane,
+      config: {
+        runnerOutputRoot: config.runnerOutputRoot,
+        runnerDefaultTimeoutMs: config.runnerDefaultTimeoutMs,
+        runnerMaxDeclaredOutputs: config.runnerMaxDeclaredOutputs,
+        runnerLogCaptureMaxBytes: config.runnerLogCaptureMaxBytes,
+      },
+    })
+  }
 }

@@ -97,6 +97,15 @@ function selected(selection: CaptureSelection, toolName: string): 'selected' | '
   return selection.exactToolNames.includes(toolName) ? 'selected' : 'not_selected'
 }
 
+/** Identity material for one invocation basis under one Graph (shared by capture and the SPEC-02 acceptance lane). */
+export function runIdentityMaterial(graphId: string, sessionId: string, basis: InvocationEventBasisV1): JsonValue {
+  return basis.kind === 'top_level_tool'
+    ? { graphId, basisKind: 'top_level_tool', sessionId, callEventSeq: basis.callEvent.seq, callId: basis.callId }
+    : basis.kind === 'top_level_not_started'
+      ? { graphId, basisKind: 'top_level_not_started', sessionId, assistantEventSeq: basis.assistantEvent.seq, toolCallBlockIndex: basis.toolCallBlockIndex, callId: basis.callId }
+      : { graphId, basisKind: 'code_mode_dispatch', sessionId, startEventSeq: basis.startEvent.seq, rootCallId: basis.rootCallId, parentCallId: basis.parentCallId, subCallId: basis.subCallId }
+}
+
 function capture(
   scope: EvidenceGraphScopeV1,
   basis: InvocationEventBasisV1,
@@ -108,12 +117,7 @@ function capture(
   startedAt: number | null,
   endedAt: number,
 ): CapturedInvocation {
-  const identityMaterial: JsonValue = basis.kind === 'top_level_tool'
-    ? { graphId: scope.graphId, basisKind: 'top_level_tool', sessionId: scope.sessionId, callEventSeq: basis.callEvent.seq, callId: basis.callId }
-    : basis.kind === 'top_level_not_started'
-      ? { graphId: scope.graphId, basisKind: 'top_level_not_started', sessionId: scope.sessionId, assistantEventSeq: basis.assistantEvent.seq, toolCallBlockIndex: basis.toolCallBlockIndex, callId: basis.callId }
-      : { graphId: scope.graphId, basisKind: 'code_mode_dispatch', sessionId: scope.sessionId, startEventSeq: basis.startEvent.seq, rootCallId: basis.rootCallId, parentCallId: basis.parentCallId, subCallId: basis.subCallId }
-  const runId = deriveRunId(identityMaterial)
+  const runId = deriveRunId(runIdentityMaterial(scope.graphId, scope.sessionId, basis))
   const outcome = outcomeOf(error, block.isError === true)
   const invocationMaterial = argumentsMaterial as unknown as JsonValue
   return {

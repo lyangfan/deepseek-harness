@@ -3,9 +3,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import { canonicalJson } from './canonical-json.ts'
-import type { CompileAttemptId as CompileAttemptIdType, EvidenceEdgeId as EvidenceEdgeIdType, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeId as EvidenceNodeIdType, EvidenceRunId as EvidenceRunIdType, ObservationId as ObservationIdType, RecoveryId as RecoveryIdType, Sha256Digest, StagingId as StagingIdType } from './types.ts'
+import type { ArtifactId as ArtifactIdType, ArtifactVersionId as ArtifactVersionIdType, CompileAttemptId as CompileAttemptIdType, ContextEntityId as ContextEntityIdType, EvidenceEdgeId as EvidenceEdgeIdType, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeId as EvidenceNodeIdType, EvidenceRunId as EvidenceRunIdType, LocationObservationId as LocationObservationIdType, ObservationId as ObservationIdType, ReceiptAcceptanceId as ReceiptAcceptanceIdType, ReceiptSubmissionId as ReceiptSubmissionIdType, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorId as SourceAnchorIdType, StagingId as StagingIdType } from './types.ts'
 
-const ID_RE = /^(?:eg_|en_|ee_|er_|eo_|ca_|st_|rc_)[A-Za-z0-9_-]+$/u
+const ID_RE = /^(?:eg_|en_|ee_|er_|eo_|ca_|st_|rc_|art_|av_|lo_|ce_|sa_|rs_|ra_)[A-Za-z0-9_-]+$/u
 
 function checked(value: string, prefix: string): string {
   if (!value.startsWith(prefix) || !ID_RE.test(value)) throw new TypeError(`invalid Evidence identity '${value}'`)
@@ -60,11 +60,25 @@ export const ObservationId = (value: string): ObservationIdType => checked(value
 export const CompileAttemptId = (value: string): CompileAttemptIdType => checked(value, 'ca_') as CompileAttemptIdType
 export const StagingId = (value: string): StagingIdType => checked(value, 'st_') as StagingIdType
 export const RecoveryId = (value: string): RecoveryIdType => checked(value, 'rc_') as RecoveryIdType
+export const ArtifactId = (value: string): ArtifactIdType => checked(value, 'art_') as ArtifactIdType
+export const ArtifactVersionId = (value: string): ArtifactVersionIdType => checked(value, 'av_') as ArtifactVersionIdType
+export const LocationObservationId = (value: string): LocationObservationIdType => checked(value, 'lo_') as LocationObservationIdType
+export const ContextEntityId = (value: string): ContextEntityIdType => checked(value, 'ce_') as ContextEntityIdType
+export const SourceAnchorId = (value: string): SourceAnchorIdType => checked(value, 'sa_') as SourceAnchorIdType
+export const ReceiptSubmissionId = (value: string): ReceiptSubmissionIdType => checked(value, 'rs_') as ReceiptSubmissionIdType
+export const ReceiptAcceptanceId = (value: string): ReceiptAcceptanceIdType => checked(value, 'ra_') as ReceiptAcceptanceIdType
 
 export const newEvidenceGraphId = (): EvidenceGraphIdType => EvidenceGraphId(`eg_${randomUUID()}`)
 export const newCompileAttemptId = (): CompileAttemptIdType => CompileAttemptId(`ca_${randomUUID()}`)
 export const newStagingId = (): StagingIdType => StagingId(`st_${randomUUID()}`)
 export const newRecoveryId = (): RecoveryIdType => RecoveryId(`rc_${randomUUID()}`)
+export const newArtifactId = (): ArtifactIdType => ArtifactId(`art_${randomUUID()}`)
+export const newArtifactVersionId = (): ArtifactVersionIdType => ArtifactVersionId(`av_${randomUUID()}`)
+export const newLocationObservationId = (): LocationObservationIdType => LocationObservationId(`lo_${randomUUID()}`)
+export const newContextEntityId = (): ContextEntityIdType => ContextEntityId(`ce_${randomUUID()}`)
+export const newSourceAnchorId = (): SourceAnchorIdType => SourceAnchorId(`sa_${randomUUID()}`)
+export const newReceiptSubmissionId = (): ReceiptSubmissionIdType => ReceiptSubmissionId(`rs_${randomUUID()}`)
+export const newReceiptAcceptanceId = (): ReceiptAcceptanceIdType => ReceiptAcceptanceId(`ra_${randomUUID()}`)
 
 /**
  * Derive a stable Run identity.
@@ -90,3 +104,15 @@ export const deriveNodeId = (material: JsonValue): EvidenceNodeIdType => Evidenc
  * @returns Deterministic Edge identity.
  */
 export const deriveEdgeId = (material: JsonValue): EvidenceEdgeIdType => EvidenceEdgeId(tagged('ee_', 'animalge:edge-id:v1', material))
+/**
+ * Derive a stable ArtifactVersion Node identity (SPEC-02 §4.1).
+ * @param material `{graphId, nodeKind:'ArtifactVersion', artifactVersionId}`.
+ * @returns Deterministic Node identity.
+ */
+export const deriveArtifactNodeId = (material: { readonly graphId: EvidenceGraphIdType; readonly nodeKind: 'ArtifactVersion'; readonly artifactVersionId: ArtifactVersionIdType }): EvidenceNodeIdType => EvidenceNodeId(tagged('en_', 'animalge:artifact-node-id:v1', material))
+/**
+ * Derive a stable ContextEntity Node identity (SPEC-02 §4.1).
+ * @param material `{graphId, nodeKind:'ContextEntity', contextEntityId}`.
+ * @returns Deterministic Node identity.
+ */
+export const deriveContextNodeId = (material: { readonly graphId: EvidenceGraphIdType; readonly nodeKind: 'ContextEntity'; readonly contextEntityId: ContextEntityIdType }): EvidenceNodeIdType => EvidenceNodeId(tagged('en_', 'animalge:context-node-id:v1', material))

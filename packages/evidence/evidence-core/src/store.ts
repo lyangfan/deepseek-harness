@@ -5,27 +5,43 @@ import type { JsonValue, SessionHeader, SessionId } from '@deepseek-ai/dsh-sessi
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
-import { canonicalJson, sha256Digest } from './canonical-json.ts'
+import { canonicalDigest, canonicalJson, sha256Digest } from './canonical-json.ts'
 import { newCompileAttemptId, newEvidenceGraphId, newRecoveryId, newStagingId } from './identity.ts'
 import {
+  artifactRecordSchema,
+  artifactVersionCoreSchema,
   capturedInvocationSchema,
   compileAttemptSchema,
   compileOutboxSchema,
+  contextEntitySchema,
   currentHeadSchema,
   graphRecordSchema,
   headCommitSchema,
+  locationObservationSchema,
   quarantineRecordSchema,
   queueClockSchema,
+  receiptAcceptanceSchema,
+  receiptLaneSchema,
+  receiptSubmissionSchema,
   sessionGraphBootstrapSchema,
+  sourceAnchorSchema,
   stagingRecordSchema,
   storedSnapshotSchema,
   usageSchema,
 } from './schema.ts'
-import type { CapturedInvocation, CompileAttempt, CompileOutbox, GraphRecord, HeadCommit, QuarantineRecord, QueueClock, SessionGraphBootstrap, StagingRecord, UsageRecord } from './schema.ts'
+import type { ArtifactRecord, ArtifactVersionCore, CapturedInvocation, CompileAttempt, CompileOutbox, ContextEntityRecord, GraphRecord, HeadCommit, LocationObservation, QuarantineRecord, QueueClock, ReceiptAcceptanceRecord, ReceiptLaneRecord, ReceiptSubmission, SessionGraphBootstrap, SourceAnchorRecord, StagingRecord, UsageRecord } from './schema.ts'
 import type { CompileAttemptId, CurrentHeadV1, EvidenceGraphId, EvidenceGraphScopeV1, EvidenceSnapshotPayloadV1, RecoveryId, Sha256Digest, StagingId, StoredSnapshotV1 } from './types.ts'
 import { snapshotRecord, verifyStoredSnapshot } from './integrity.ts'
 
 type CommitKey = `${string}:${number}`
+type ArtifactKey = string
+type ArtifactVersionKey = string
+type LocationObservationKey = string
+type ContextEntityKey = string
+type SourceAnchorKey = string
+type ReceiptSubmissionKey = string
+type ReceiptAcceptanceKey = string
+type ReceiptLaneKey = SessionId
 
 /** Durable declaration shared by both JSON and SQLite Storage backends. */
 export const evidenceDomainSpec = defineDomain({
@@ -44,6 +60,15 @@ export const evidenceDomainSpec = defineDomain({
     quarantine: domainTable<RecoveryId, QuarantineRecord>(quarantineRecordSchema),
     queue_clock: domainTable<'global', QueueClock>(queueClockSchema),
     usage: domainTable<'global', UsageRecord>(usageSchema),
+    // SPEC-02 material owner tables (append-only ledgers; receipt_lane is the only mutable one).
+    artifacts: domainTable<ArtifactKey, ArtifactRecord>(artifactRecordSchema),
+    artifact_versions: domainTable<ArtifactVersionKey, ArtifactVersionCore>(artifactVersionCoreSchema),
+    location_observations: domainTable<LocationObservationKey, LocationObservation>(locationObservationSchema),
+    context_entities: domainTable<ContextEntityKey, ContextEntityRecord>(contextEntitySchema),
+    source_anchors: domainTable<SourceAnchorKey, SourceAnchorRecord>(sourceAnchorSchema),
+    receipt_submissions: domainTable<ReceiptSubmissionKey, ReceiptSubmission>(receiptSubmissionSchema),
+    receipt_acceptances: domainTable<ReceiptAcceptanceKey, ReceiptAcceptanceRecord>(receiptAcceptanceSchema),
+    receipt_lane: domainTable<ReceiptLaneKey, ReceiptLaneRecord>(receiptLaneSchema),
   },
 })
 
@@ -95,6 +120,114 @@ export class EvidenceStore {
   get quarantine(): KvTable<RecoveryId, QuarantineRecord> { return this.domain.table('quarantine') }
   get queueClock(): KvTable<'global', QueueClock> { return this.domain.table('queue_clock') }
   get usage(): KvTable<'global', UsageRecord> { return this.domain.table('usage') }
+  get artifacts(): KvTable<ArtifactKey, ArtifactRecord> { return this.domain.table('artifacts') }
+  get artifactVersions(): KvTable<ArtifactVersionKey, ArtifactVersionCore> { return this.domain.table('artifact_versions') }
+  get locationObservations(): KvTable<LocationObservationKey, LocationObservation> { return this.domain.table('location_observations') }
+  get contextEntities(): KvTable<ContextEntityKey, ContextEntityRecord> { return this.domain.table('context_entities') }
+  get sourceAnchors(): KvTable<SourceAnchorKey, SourceAnchorRecord> { return this.domain.table('source_anchors') }
+  get receiptSubmissions(): KvTable<ReceiptSubmissionKey, ReceiptSubmission> { return this.domain.table('receipt_submissions') }
+  get receiptAcceptances(): KvTable<ReceiptAcceptanceKey, ReceiptAcceptanceRecord> { return this.domain.table('receipt_acceptances') }
+  get receiptLane(): KvTable<ReceiptLaneKey, ReceiptLaneRecord> { return this.domain.table('receipt_lane') }
+
+  /**
+   * Owner-serialized immutable put for one SPEC-02 material record (§10.1).
+   * The accountedBytes hard limit pauses new material writes (§10.3); an
+   * in-flight settlement whose submission is already being assembled is the
+   * caller's responsibility to bound, not this gate's.
+   */
+  async putMaterialRecord<K extends string, V>(table: KvTable<K, V>, key: K, value: V): Promise<void> {
+    await this.enqueue(async () => {
+      const usage = this.usage.get('global')
+      if (usage !== undefined && this.hardLimitBytes > 0 && usage.accountedBytes >= this.hardLimitBytes) {
+        throw new EvidenceStoreError('storage_hard_limit', `material write paused: accountedBytes ${String(usage.accountedBytes)} ≥ hard limit ${String(this.hardLimitBytes)}`)
+      }
+      await this.putImmutable(table, key, value)
+      await this.recountNow()
+    })
+  }
+
+  /** Hard-limit threshold for material writes; 0 disables the gate (test harness). */
+  hardLimitBytes = 0
+
+  /** The lane's only mutable record: single-record atomic update (§7.1). */
+  async updateReceiptLane(
+    sessionId: SessionId,
+    update: (current: ReceiptLaneRecord | undefined) => ReceiptLaneRecord,
+  ): Promise<ReceiptLaneRecord> {
+    return this.enqueue(async () => {
+      const next = update(this.receiptLane.get(sessionId))
+      await this.receiptLane.put(sessionId, next)
+      await this.recountNow()
+      return next
+    })
+  }
+
+  receiptLaneFor(sessionId: SessionId): ReceiptLaneRecord | undefined {
+    return this.receiptLane.get(sessionId)
+  }
+
+  /** Latest persisted observation for one ArtifactVersion (append-only ledger scan). */
+  latestObservation(artifactVersionId: string): LocationObservation | undefined {
+    let latest: LocationObservation | undefined
+    for (const [, row] of this.locationObservations.entries()) {
+      if (row.artifactVersionId !== artifactVersionId) continue
+      const newer = latest === undefined
+        || row.observedAt > latest.observedAt
+        || (row.observedAt === latest.observedAt && row.locationObservationId > latest.locationObservationId)
+      if (newer) latest = row
+    }
+    return latest
+  }
+
+  /** Latest observation whose target matches, regardless of version (locator reuse lookup). */
+  latestObservationForTarget(locator: string): LocationObservation | undefined {
+    let latest: LocationObservation | undefined
+    for (const [, row] of this.locationObservations.entries()) {
+      if (row.locator !== locator) continue
+      if (latest === undefined || row.observedAt > latest.observedAt || (
+        row.observedAt === latest.observedAt && row.locationObservationId > latest.locationObservationId)) latest = row
+    }
+    return latest
+  }
+
+  /** Derive the current version of one Artifact from its immutable chain head (single writer ⇒ unique head). (§4.1) */
+  currentArtifactVersion(artifactId: string): ArtifactVersionCore | undefined {
+    const versions: ArtifactVersionCore[] = []
+    for (const [, row] of this.artifactVersions.entries()) if (row.artifactId === artifactId) versions.push(row)
+    if (versions.length === 0) return undefined
+    const parents = new Set(versions.map(row => row.parentVersionId).filter((id): id is NonNullable<typeof id> => id !== null))
+    const heads = versions.filter(row => !parents.has(row.artifactVersionId))
+    if (heads.length !== 1) throw new EvidenceStoreError('material_identity_conflict', `Artifact '${artifactId}' has ${heads.length} chain heads`)
+    return heads[0]
+  }
+
+  /** Accepted acceptance records by receiptId (idempotent lookup for the lane and materializer). */
+  acceptanceFor(receiptId: string): ReceiptAcceptanceRecord | undefined {
+    for (const [, row] of this.receiptAcceptances.entries()) if (row.receiptId === receiptId) return row
+    return undefined
+  }
+
+  /** Deterministic digest over the material ledger state (late-acceptance idempotency key input, §7.4). */
+  materialStateDigest(): Sha256Digest {
+    const material: Record<string, unknown> = {}
+    const tables: Array<[string, KvTable<string, unknown>]> = [
+      ['artifacts', this.artifacts], ['artifact_versions', this.artifactVersions],
+      ['location_observations', this.locationObservations], ['context_entities', this.contextEntities],
+      ['source_anchors', this.sourceAnchors], ['receipt_submissions', this.receiptSubmissions],
+      ['receipt_acceptances', this.receiptAcceptances],
+    ]
+    for (const [name, table] of tables) {
+      const rows: Array<[string, unknown]> = [...table.entries()].map(([key, value]) => [key, value])
+      rows.sort((left, right) => left[0].localeCompare(right[0]))
+      material[name] = rows
+    }
+    return canonicalDigest(material as JsonValue)
+  }
+
+  /** Sessions with pending submissions (lane wake set). */
+  sessionsWithPendingReceipts(): SessionId[] {
+    return [...this.receiptLane.entries()].filter(([, row]) => row.pendingSubmissions.length > 0).map(([sessionId]) => sessionId)
+  }
 
   async close(): Promise<void> {
     this.accepting = false
@@ -240,7 +373,7 @@ export class EvidenceStore {
           targetNextSeqExclusive: Math.max(existing.targetNextSeqExclusive, row.targetNextSeqExclusive),
           lastBoundarySeq: Math.max(existing.lastBoundarySeq, row.lastBoundarySeq),
           boundaryCount: existing.boundaryCount + row.boundaryCount,
-          reasonCounts: Object.fromEntries(Object.keys(existing.reasonCounts).map(key => [key, existing.reasonCounts[key as keyof typeof existing.reasonCounts] + row.reasonCounts[key as keyof typeof row.reasonCounts]])) as CompileOutbox['reasonCounts'],
+          reasonCounts: Object.fromEntries(Object.keys({ ...existing.reasonCounts, ...row.reasonCounts }).map(key => [key, (existing.reasonCounts[key as keyof typeof existing.reasonCounts] ?? 0) + (row.reasonCounts[key as keyof typeof row.reasonCounts] ?? 0)])) as CompileOutbox['reasonCounts'],
           lastQueuedAt: row.lastQueuedAt,
           eligibleAfter: row.eligibleAfter,
           latestAdmittedTarget: Math.max(existing.latestAdmittedTarget ?? 0, row.latestAdmittedTarget ?? row.targetNextSeqExclusive),
@@ -342,9 +475,11 @@ export class EvidenceStore {
         } catch { coveredPayload = undefined }
         if (coveredPayload !== undefined
           && coveredPayload.deterministicWatermark.nextSeqExclusive >= payload.deterministicWatermark.nextSeqExclusive
-          && sameBytes(coveredPayload.revisions, payload.revisions)) {
-          // §8.4 covered-target no-op: identical revisions already cover the target; settle the
-          // duplicate request as succeeded without creating a new Snapshot or head revision.
+          && sameBytes(coveredPayload.revisions, payload.revisions)
+          && sameBytes(coveredPayload, payload)) {
+          // §8.4 covered-target no-op (SPEC-02 §7.4 extends the idempotency key with the
+          // material ledger state): identical revisions AND identical canonical bytes — a
+          // late receipt acceptance changes the payload bytes and must produce a new Snapshot.
           await this.attempts.put(attempt.attemptId, {
             ...attempt, state: 'succeeded', stage: 'finalize', updatedAt: Date.now(),
             resultSnapshotDigest: currentHeadRow.snapshotDigest,
@@ -666,6 +801,10 @@ export class EvidenceStore {
       ['attempts', this.attempts], ['outbox', this.outbox],
       ['staging', this.staging], ['quarantine', this.quarantine],
       ['queue_clock', this.queueClock],
+      ['artifacts', this.artifacts], ['artifact_versions', this.artifactVersions],
+      ['location_observations', this.locationObservations], ['context_entities', this.contextEntities],
+      ['source_anchors', this.sourceAnchors], ['receipt_submissions', this.receiptSubmissions],
+      ['receipt_acceptances', this.receiptAcceptances], ['receipt_lane', this.receiptLane],
     ]
     let accountedBytes = 0
     let recordCount = 0

@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import { z } from 'zod'
 import { canonicalDigest, canonicalJson } from './canonical-json.ts'
-import { deriveEdgeId, deriveNodeId } from './identity.ts'
+import { deriveArtifactNodeId, deriveContextNodeId, deriveEdgeId, deriveNodeId } from './identity.ts'
 import { evidenceSnapshotPayloadSchema } from './schema.ts'
 import type { EvidenceNodeV1, EvidenceSnapshotPayloadV1, StoredSnapshotV1 } from './types.ts'
 
@@ -43,8 +43,14 @@ export function verifySnapshot(input: unknown): EvidenceSnapshotPayloadV1 {
   } catch (error) {
     // §4.3: reserved node kinds (e.g. SourceAssertion, Annotation) belong to later owner specs
     // and must be rejected under their own named code rather than a generic schema error.
-    if (error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('nodeKind'))) {
-      throw new EvidenceIntegrityError('unsupported_node_kind', 'node kind is reserved for a later owner spec and is not supported by SPEC-01')
+    if (error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('nodeKind') || issue.path.includes('payloadSchema'))) {
+      // The node union discriminates on payloadSchema; an unknown kind surfaces as an
+      // unrecognized discriminator, a reserved kind as a nodeKind literal mismatch.
+      throw new EvidenceIntegrityError('unsupported_node_kind', 'node kind is reserved for a later owner spec and is not supported')
+    }
+    // SPEC-02 §4.6: agent/model ContextEntity kinds stay fail closed under their own named code.
+    if (error instanceof z.ZodError && error.issues.some(issue => issue.path.includes('contextKind'))) {
+      throw new EvidenceIntegrityError('unsupported_context_kind', 'ContextEntity kind is reserved for a later owner spec')
     }
     throw error
   }
@@ -60,7 +66,11 @@ export function verifySnapshot(input: unknown): EvidenceSnapshotPayloadV1 {
     validateRefs(node, payload.deterministicWatermark.nextSeqExclusive)
     const expected = node.nodeKind === 'Run'
       ? deriveNodeId({ graphId, nodeKind: 'Run', runId: node.payload.runId })
-      : deriveNodeId({ graphId, nodeKind: 'Observation', observationId: node.payload.observationId })
+      : node.nodeKind === 'Observation'
+        ? deriveNodeId({ graphId, nodeKind: 'Observation', observationId: node.payload.observationId })
+        : node.nodeKind === 'ArtifactVersion'
+          ? deriveArtifactNodeId({ graphId, nodeKind: 'ArtifactVersion', artifactVersionId: node.payload.artifactVersionId })
+          : deriveContextNodeId({ graphId, nodeKind: 'ContextEntity', contextEntityId: node.payload.contextEntityId })
     if (expected !== node.nodeId) throw new EvidenceIntegrityError('identity_mismatch', `node '${node.nodeId}' identity does not recompute`)
   }
   const adjacency = new Map<string, string[]>()
@@ -70,11 +80,17 @@ export function verifySnapshot(input: unknown): EvidenceSnapshotPayloadV1 {
     const from = nodes.get(edge.from)
     const to = nodes.get(edge.to)
     if (from === undefined || to === undefined) throw new EvidenceIntegrityError('missing_endpoint', `edge '${edge.edgeId}' has a missing endpoint`)
-    if (edge.edgeType === 'generated_by' && (from.nodeKind !== 'Observation' || to.nodeKind !== 'Run')) {
-      throw new EvidenceIntegrityError('invalid_endpoint', 'generated_by must point Observation to Run')
+    if (edge.edgeType === 'generated_by' && !((from.nodeKind === 'Observation' || from.nodeKind === 'ArtifactVersion') && to.nodeKind === 'Run')) {
+      throw new EvidenceIntegrityError('invalid_endpoint', 'generated_by must point Observation or ArtifactVersion to Run')
     }
     if (edge.edgeType === 'part_of' && (from.nodeKind !== 'Run' || to.nodeKind !== 'Run')) {
       throw new EvidenceIntegrityError('invalid_endpoint', 'part_of must point Run to Run')
+    }
+    if (edge.edgeType === 'used' && (from.nodeKind !== 'Run' || (to.nodeKind !== 'ArtifactVersion' && to.nodeKind !== 'ContextEntity'))) {
+      throw new EvidenceIntegrityError('invalid_endpoint', 'used must point Run to ArtifactVersion or ContextEntity')
+    }
+    if ((edge.edgeType === 'supersedes' || edge.edgeType === 'restored_from') && (from.nodeKind !== 'ArtifactVersion' || to.nodeKind !== 'ArtifactVersion')) {
+      throw new EvidenceIntegrityError('invalid_endpoint', `${edge.edgeType} must point ArtifactVersion to ArtifactVersion`)
     }
     const expected = deriveEdgeId({ graphId, edgeType: edge.edgeType, from: edge.from, to: edge.to })
     if (expected !== edge.edgeId) throw new EvidenceIntegrityError('identity_mismatch', `edge '${edge.edgeId}' identity does not recompute`)
