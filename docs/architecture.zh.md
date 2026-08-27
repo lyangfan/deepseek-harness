@@ -49,6 +49,7 @@ dsh --profile web --dump-config
 | [`core/agent-loop`](subsystems/core.zh.md) | 实现该接口的默认驱动器 | `ctx.agentLoop` |
 | [`core/scope`](subsystems/scope.zh.md) | 按 agent 划分作用域的注册原语 | 库，无 ctx 键 |
 | [`llm/llm`](subsystems/llm-streaming.zh.md) | 消息与流式词汇表，以及适配器 seam | `ctx.llm` |
+| [`evidence/evidence-core`](subsystems/evidence.zh.md) | 基于持久 Session event 的确定性不可变 Evidence 投影 | 私有 function plugin，无 ctx 键 |
 
 <a id="events"></a>
 

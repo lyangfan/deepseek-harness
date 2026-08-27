@@ -188,6 +188,9 @@ flowchart TD
     pkg_fs_e2b["fs-e2b"]
     pkg_subprocess_e2b["subprocess-e2b"]
   end
+  subgraph group_evidence["packages/evidence"]
+    pkg_evidence_core["evidence-core"]
+  end
   subgraph group_examples["packages/examples"]
     pkg_acp_demo["acp-demo"]
     pkg_agent_spine_demo["agent-spine-demo"]
@@ -864,6 +867,16 @@ flowchart TD
   pkg_session_reference --> pkg_session
   pkg_session_reference --> pkg_session_query
   pkg_session_reference --> pkg_typert_protocol
+  pkg_evidence_core --> pkg_atomic_write
+  pkg_evidence_core --> pkg_brand
+  pkg_evidence_core --> pkg_invariants
+  pkg_evidence_core --> pkg_llm
+  pkg_evidence_core --> pkg_loader_smoke
+  pkg_evidence_core --> pkg_session
+  pkg_evidence_core --> pkg_session_persistence
+  pkg_evidence_core --> pkg_storage_domain
+  pkg_evidence_core --> pkg_tools
+  pkg_evidence_core --> pkg_workspace
   pkg_cordis_host_runner --> pkg_agent
   pkg_cordis_host_runner --> pkg_brand
   pkg_cordis_host_runner --> pkg_invariants
@@ -1599,6 +1612,7 @@ flowchart TD
 | [`agent-instructions`](../packages/context/agent-instructions) | `context` | [`agent`](../packages/core/agent), [`fs`](../packages/fs/fs), [`home-paths`](../packages/util/home-paths), [`invariants`](../packages/runtime-diagnostics/invariants), [`llm`](../packages/llm/llm), [`session`](../packages/core/session), [`tools`](../packages/core/tools) |
 | [`file-reference-local`](../packages/context/file-reference-local) | `context` | [`agent`](../packages/core/agent), [`file-reference`](../packages/context/file-reference), [`invariants`](../packages/runtime-diagnostics/invariants), [`system-prompt`](../packages/core/system-prompt), [`tools`](../packages/core/tools) |
 | [`session-reference`](../packages/context/session-reference) | `context` | [`agent`](../packages/core/agent), [`compaction`](../packages/compaction/compaction), [`invariants`](../packages/runtime-diagnostics/invariants), [`llm`](../packages/llm/llm), [`output-retention`](../packages/util/output-retention), [`session`](../packages/core/session), [`session-query`](../packages/session-query/session-query), [`typert-protocol`](../packages/typert/protocol) |
+| [`evidence-core`](../packages/evidence/evidence-core) | `evidence` | [`atomic-write`](../packages/util/atomic-write), [`brand`](../packages/util/brand), [`invariants`](../packages/runtime-diagnostics/invariants), [`llm`](../packages/llm/llm), [`loader-smoke`](../packages/test-support/loader-smoke), [`session`](../packages/core/session), [`session-persistence`](../packages/session/session-persistence), [`storage-domain`](../packages/storage/storage-domain), [`tools`](../packages/core/tools), [`workspace`](../packages/workspace/workspace) |
 | [`cordis-host-runner`](../packages/extensions/cordis-host-runner) | `extensions` | [`agent`](../packages/core/agent), [`brand`](../packages/util/brand), [`invariants`](../packages/runtime-diagnostics/invariants), [`llm`](../packages/llm/llm), [`scope`](../packages/core/scope), [`session`](../packages/core/session), [`tools`](../packages/core/tools), [`typert-protocol`](../packages/typert/protocol) |
 | [`repeat-tool-reminder`](../packages/guard/repeat-tool-reminder) | `guard` | [`agent`](../packages/core/agent), [`invariants`](../packages/runtime-diagnostics/invariants), [`tools`](../packages/core/tools) |
 | [`tool-call-timeout-policy`](../packages/guard/timeout-policy) | `guard` | [`invariants`](../packages/runtime-diagnostics/invariants), [`llm`](../packages/llm/llm), [`timeout`](../packages/util/timeout), [`tools`](../packages/core/tools) |

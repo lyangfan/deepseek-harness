@@ -595,6 +595,52 @@ export interface Config {
 
 来源：[`packages/e2b/e2b/src/index.ts:43`](../packages/e2b/e2b/src/index.ts)
 
+<a id="deepseek-aidsh-evidence-core"></a>
+
+## `@deepseek-ai/dsh-evidence-core`
+
+需要：`storageDomain` · `sessionPersistence` · `sessions`
+
+```ts config-catalog
+/** Loader configuration for deterministic Evidence capture, publication, retry, and retention. */
+export interface Config {
+  /** Exact Agent preset ids whose Sessions may create Evidence state. */
+  readonly eligibleAgentPresetIds: string[]
+  /** Deterministic, non-LLM Tool selection rule bound into Snapshot revisions. */
+  readonly deterministicRunSelection: DeterministicRunSelectionConfig
+  /** Quiet window after the latest completion boundary before compilation, in milliseconds. */
+  readonly idleMergeMs: number
+  /** Maximum canonical accounted bytes across durable outbox rows. */
+  readonly captureOutboxMaxBytes: number
+  /** Maximum unprocessed completion boundaries admitted to one outbox row. */
+  readonly captureOutboxMaxBoundaries: number
+  /** Accounted-byte threshold that reports soft pressure without stopping an active commit. */
+  readonly storageSoftBytes: number
+  /** Accounted-byte threshold above which no new compile attempt or staging row starts. */
+  readonly storageHardBytes: number
+  /** Minimum age before unreferenced staging records are eligible for deletion. */
+  readonly stagingGcAgeMs: number
+  /** Minimum age after first quarantine observation before an orphan Snapshot is deleted. */
+  readonly orphanGcGraceMs: number
+  /** Interval between conservative reference-closure garbage-collection passes. */
+  readonly gcIntervalMs: number
+  /** Maximum total attempts in one no-progress retry chain, including its first attempt. */
+  readonly maxRetryAttempts: number
+  /** Delay before each successor attempt; length must equal maxRetryAttempts minus one. */
+  readonly retryDelaysMs: number[]
+}
+
+/** Exact, revisioned Tool-name rule used by the non-LLM compiler. */
+export interface DeterministicRunSelectionConfig {
+  /** Deployment-owned revision label included in every selected Run payload. */
+  readonly revision: string
+  /** Exact case-sensitive Tool names eligible for deterministic projection. */
+  readonly exactToolNames: string[]
+}
+```
+
+来源：[`packages/evidence/evidence-core/src/index.ts:40`](../packages/evidence/evidence-core/src/index.ts)
+
 <a id="deepseek-aidsh-experimental-agent-team"></a>
 
 ## `@deepseek-ai/dsh-experimental-agent-team`
