@@ -597,10 +597,10 @@ Source: [`packages/e2b/e2b/src/index.ts:43`](../packages/e2b/e2b/src/index.ts)
 
 ## `@deepseek-ai/dsh-evidence-core`
 
-Requires: `storageDomain` · `sessionPersistence` · `sessions`
+Requires: `storageDomain` · `sessionPersistence` · `sessions` · `fs` · `subprocess` · `tools`
 
 ```ts config-catalog
-/** Loader configuration for deterministic Evidence capture, publication, retry, and retention. */
+/** Loader configuration for deterministic Evidence capture, publication, retry, retention, and the SPEC-02 material layer. */
 export interface Config {
   /** Exact Agent preset ids whose Sessions may create Evidence state. */
   readonly eligibleAgentPresetIds: string[]
@@ -626,6 +626,18 @@ export interface Config {
   readonly maxRetryAttempts: number
   /** Delay before each successor attempt; length must equal maxRetryAttempts minus one. */
   readonly retryDelaysMs: number[]
+  /** Whether the declarative scientific-code Runner Tool is registered (SPEC-02 §11.1). */
+  readonly runnerEnabled: boolean
+  /** Parent directory of the run-exclusive Runner output directories (SPEC-02 §11.1). */
+  readonly runnerOutputRoot: string
+  /** Default Runner execution timeout in milliseconds. */
+  readonly runnerDefaultTimeoutMs: number
+  /** Maximum declared outputs accepted by one Runner call. */
+  readonly runnerMaxDeclaredOutputs: number
+  /** Per-stream captured log bound in bytes; overflow truncates and marks. */
+  readonly runnerLogCaptureMaxBytes: number
+  /** Maximum freshness-cache entries for ArtifactVersion hashing reuse. */
+  readonly materialHashCacheMaxEntries: number
 }
 
 /** Exact, revisioned Tool-name rule used by the non-LLM compiler. */
@@ -637,7 +649,7 @@ export interface DeterministicRunSelectionConfig {
 }
 ```
 
-Source: [`packages/evidence/evidence-core/src/index.ts:40`](../packages/evidence/evidence-core/src/index.ts)
+Source: [`packages/evidence/evidence-core/src/index.ts:53`](../packages/evidence/evidence-core/src/index.ts)
 
 <a id="deepseek-aidsh-experimental-agent-team"></a>
 

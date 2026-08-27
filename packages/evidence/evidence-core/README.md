@@ -4,11 +4,15 @@ English | [中文](README.zh.md)
 
 Deterministic, host-plane Evidence projection for AnimalGE open mode. The function plugin observes eligible DSH Sessions, flushes and re-reads their authoritative persisted suffixes, folds selected terminal Tool invocations without an LLM, validates an immutable Snapshot, and publishes it through a digest-and-revision head CAS in Storage Domain `animalge_evidence` version `0`.
 
-The package deliberately provides no `ctx.evidence` service, public registry, Tool, prompt, UI, or second Agent harness. Its Store, compiler queue, capture index, and recovery owner stay private. Consumers may import the frozen value schemas and validators, or export a committed Snapshot record that an owning integration has already resolved.
+The package deliberately provides no `ctx.evidence` service, public registry, prompt, UI, or second Agent harness. Its Store, compiler queue, capture index, and recovery owner stay private. Consumers may import the frozen value schemas and validators, or export a committed Snapshot record that an owning integration has already resolved.
+
+## SPEC-02 material layer
+
+The same feature owner additionally provides the material protocol: a reference-only ArtifactVersion provider with four-layer state (immutable version core, append-only location observations, snapshot-frozen state, live re-observation), typed SourceAnchor profiles (`text` line ranges and `csv_table` slices) with owner re-verification, the two-phase `EvidenceRunReceipt` family (Submission before the tool result settles; deterministic AcceptanceRecord after the persisted event pair verifies), receipt-backed materialization through the deterministic compiler, and the `sci_run_code` declarative Runner Tool (v0.1 ships the `bash` profile) executing in a run-exclusive, never-reused output directory with pre-declared outputs. Identity failures reject a whole acceptance; a failed component only drops that component's lineage. Anchor kinds and ContextEntity kinds beyond the registered set fail closed.
 
 ## Composition
 
-The plugin requires `ctx.storageDomain`, `ctx.sessionPersistence`, and `ctx.sessions`. If `ctx.workspaceRegistry` exists, a unique stable membership is bound monotonically; cwd and path are never used as Workspace identity.
+The plugin requires `ctx.storageDomain`, `ctx.sessionPersistence`, `ctx.sessions`, `ctx.fs`, `ctx.subprocess`, and `ctx.tools`. If `ctx.workspaceRegistry` exists, a unique stable membership is bound monotonically; cwd and path are never used as Workspace identity. Runner configuration adds `runnerEnabled` (default true), `runnerOutputRoot`, `runnerDefaultTimeoutMs`, `runnerMaxDeclaredOutputs`, `runnerLogCaptureMaxBytes`, and `materialHashCacheMaxEntries`.
 
 ```yaml
 - id: evidence-core

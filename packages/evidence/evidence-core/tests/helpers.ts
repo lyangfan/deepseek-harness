@@ -68,3 +68,55 @@ export async function storeHarness(pool = new MemoryMediaPool()) {
     },
   }
 }
+
+// --- SPEC-02 material harness ---
+
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+import SessionStore from '@deepseek-ai/dsh-session'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { ArtifactProvider } from '../src/artifact.ts'
+import { SourceAnchorOwner } from '../src/anchor.ts'
+import { AcceptanceLane } from '../src/acceptance.ts'
+import { ContextEntityOwner } from '../src/context-entity.ts'
+import { RUNNER_PROVIDER_ID } from '../src/receipt.ts'
+import { REGISTERED_CAPTURE_PROFILE_IDS } from '../src/runner/profiles.ts'
+
+/** Real-fs + real-persistence harness for the SPEC-02 material owner suites. */
+export async function materialHarness() {
+  const root = await mkdtemp(join(tmpdir(), 'spec02-material-'))
+  const ctx = new Context()
+  await ctx.plugin(Storage)
+  ctx.storage.backend.register('memory', new MemoryStorageBackend(pool0()))
+  const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} })
+  ctx.storage.mount('domain', facility)
+  ctx.provide('storageDomain', facility)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'sessions'), compression: 'none', writeBatchMaxDelayMs: 1 })
+  await ctx.plugin(LocalFileSystem, { cwd: root })
+  await ctx.plugin(LocalSubprocessRuntime)
+  const store = await EvidenceStore.open(ctx)
+  const artifacts = new ArtifactProvider(ctx, store)
+  const anchors = new SourceAnchorOwner(store, artifacts)
+  const entities = new ContextEntityOwner(store)
+  const lane = new AcceptanceLane(ctx, store, { providers: new Set([RUNNER_PROVIDER_ID]), profiles: REGISTERED_CAPTURE_PROFILE_IDS })
+  return {
+    ctx, store, artifacts, anchors, entities, lane, root,
+    createSession: async (id: string) => {
+      const session = ctx.sessions.create(SessionId(id), { meta: { agentPreset: 'animalge-open-test' } })
+      await store.bootstrap(session.header)
+      return session
+    },
+    close: async () => {
+      await store.close()
+      await ctx.fiber.dispose()
+    },
+  }
+}
+
+function pool0() {
+  return new MemoryMediaPool()
+}

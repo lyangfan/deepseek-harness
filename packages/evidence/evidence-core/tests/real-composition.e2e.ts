@@ -15,6 +15,8 @@ import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as JsonStorage from '@deepseek-ai/dsh-storage-json'
 import * as SqliteStorage from '@deepseek-ai/dsh-storage-sqlite'
 import * as EvidenceCore from '../src/index.ts'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { LOADER_SMOKE_TEST_TIMEOUT_MS, runLoaderSmoke } from '@deepseek-ai/dsh-loader-smoke'
 import type { CurrentHeadV1 } from '../src/types.ts'
 import { MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
@@ -38,6 +40,12 @@ const evidenceConfig: EvidenceCore.Config = {
   eligibleAgentPresetIds: ['animalge-open-test'],
   deterministicRunSelection: { revision: 'spec-01-test/v1', exactToolNames: ['bash'] },
   idleMergeMs: 0,
+  runnerEnabled: true,
+  runnerOutputRoot: '.evidence-runner-outputs',
+  runnerDefaultTimeoutMs: 60_000,
+  runnerMaxDeclaredOutputs: 64,
+  runnerLogCaptureMaxBytes: 1_048_576,
+  materialHashCacheMaxEntries: 4_096,
   captureOutboxMaxBytes: 67_108_864,
   captureOutboxMaxBoundaries: 1_000,
   storageSoftBytes: 1_073_741_824,
@@ -70,6 +78,14 @@ async function boot(
     await ctx.plugin(SessionStore)
     if (persistence === 'jsonl') await ctx.plugin(JsonlSessionPersistence, { root: join(root, 'sessions'), compression: 'none', writeBatchMaxDelayMs: 1 })
     else await ctx.plugin(SqliteSessionPersistence, { path: join(root, 'sessions.db'), journalMode: 'wal', busyTimeoutMs: 5_000, writeBatchMaxDelayMs: 1 })
+    // SPEC-02: the material layer requires ctx.fs, and the Runner additionally
+    // requires the subprocess service; provide both local providers so the
+    // default composition stays activation-complete.
+    await ctx.plugin(LocalFileSystem)
+    await ctx.plugin(LocalSubprocessRuntime)
+    // SPEC-01 regressions never invoke the Runner Tool, so a minimal tools service
+    // satisfies registration; the real ToolRuntime path is covered by the Loader app.
+    ctx.provide('tools', { register: () => {} } as never)
     configure?.(ctx)
     await ctx.plugin(EvidenceCore, config)
     return { ctx, root }
@@ -114,6 +130,12 @@ describe('S01-A13 budget and overflow gates', () => {
   } = {}): EvidenceCore.Config => ({
     eligibleAgentPresetIds: ['animalge-open-test'],
     deterministicRunSelection: { revision: 'spec-01-test/v1', exactToolNames: ['bash'] },
+    runnerEnabled: true,
+    runnerOutputRoot: '.evidence-runner-outputs',
+    runnerDefaultTimeoutMs: 60_000,
+    runnerMaxDeclaredOutputs: 64,
+    runnerLogCaptureMaxBytes: 1_048_576,
+    materialHashCacheMaxEntries: 4_096,
     idleMergeMs: overrides.idleMergeMs ?? 0,
     captureOutboxMaxBytes: 67_108_864,
     captureOutboxMaxBoundaries: overrides.captureOutboxMaxBoundaries ?? 1_000,
@@ -179,6 +201,12 @@ describe('S01-A09 transient read failures retry within the §8.5 budget', () => 
   const retryConfig = (maxRetryAttempts: number, retryDelaysMs: number[]): EvidenceCore.Config => ({
     eligibleAgentPresetIds: ['animalge-open-test'],
     deterministicRunSelection: { revision: 'spec-01-test/v1', exactToolNames: ['bash'] },
+    runnerEnabled: true,
+    runnerOutputRoot: '.evidence-runner-outputs',
+    runnerDefaultTimeoutMs: 60_000,
+    runnerMaxDeclaredOutputs: 64,
+    runnerLogCaptureMaxBytes: 1_048_576,
+    materialHashCacheMaxEntries: 4_096,
     idleMergeMs: 0,
     captureOutboxMaxBytes: 67_108_864,
     captureOutboxMaxBoundaries: 1_000,
@@ -311,6 +339,11 @@ describe('S01-A15 real persistence/storage contract matrix', () => {
     ctx.storage.mount('domain', facility)
     ctx.provide('storageDomain', facility)
     await ctx.plugin(SessionStore)
+    // Minimal SPEC-02 service stubs: the hot path never touches them, but the plugin's
+    // `inject` waits for fs/subprocess and the runner stays off for this composition.
+    ctx.provide('fs', {} as never)
+    ctx.provide('subprocess', {} as never)
+    ctx.provide('tools', { register: vi.fn() } as never)
     const readFrom = vi.fn(async () => { throw new Error('background read is outside the measured hot path') })
     ctx.provide('sessionPersistence', {
       listSnapshots: vi.fn(async () => []),
@@ -323,7 +356,8 @@ describe('S01-A15 real persistence/storage contract matrix', () => {
         throw new Error('evidence-core must not touch the LLM service')
       },
     }) as never)
-    await ctx.plugin(EvidenceCore, evidenceConfig)
+    const listenerConfig: import('../src/index.ts').Config = Object.assign({}, evidenceConfig, { runnerEnabled: false })
+    await ctx.plugin(EvidenceCore, listenerConfig)
     const session = ctx.sessions.create(SessionId('listener-budget'), { meta: { agentPreset: 'animalge-open-test' } })
     const flush = vi.spyOn(ctx.sessions, 'flush')
     const samples: number[] = []

@@ -4,7 +4,11 @@
 
 这是 AnimalGE open mode 的确定性 host-plane Evidence 投影。function plugin 观察符合条件的 DSH Session，先 flush，再从权威持久层读取连续后缀；它不调用 LLM，而是折叠被确定性规则选中的终态 Tool 调用，校验不可变 Snapshot，并通过 Storage Domain `animalge_evidence` version `0` 中同时比较 digest 与 revision 的 head CAS 发布。
 
-本包刻意不提供 `ctx.evidence` Service、公共 registry、Tool、prompt、UI 或第二套 Agent harness。Store、compiler queue、capture index 与 recovery owner 均保持私有。消费者只能导入冻结的值 schema 与校验器，或对 owner 已解析出的 committed Snapshot record 执行导出。
+本包刻意不提供 `ctx.evidence` Service、公共 registry、prompt、UI 或第二套 Agent harness。Store、compiler queue、capture index 与 recovery owner 均保持私有。消费者只能导入冻结的值 schema 与校验器，或对 owner 已解析出的 committed Snapshot record 执行导出。
+
+## SPEC-02 材料层
+
+同一 feature owner 另外交付材料协议：reference-only 的 ArtifactVersion provider 与四层状态（不可变版本 core、append-only 位置观察、Snapshot 冻结状态、实时重观察）、类型化 SourceAnchor profile（`text` 行范围与 `csv_table` 切片）与 owner 重校验、两阶段 `EvidenceRunReceipt` family（Submission 在 Tool result 结算前持久化；真实事件对验证后由确定性 lane 写入 AcceptanceRecord）、确定性 compiler 的 receipt-backed 物化，以及 `sci_run_code` 声明式 Runner Tool（v0.1 交付 `bash` profile）在按 run 独占、永不复用的输出目录中按预声明输出执行。身份失败拒绝整份 acceptance；单个组件失败只放弃该组件的 lineage。未注册的 Anchor kind 与 ContextEntity kind 一律 fail closed。
 
 ## 组合
 

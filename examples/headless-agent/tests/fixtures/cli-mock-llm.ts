@@ -33,8 +33,21 @@ class CliMockAdapter extends LlmAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { code: 'SERVER', message: 'CLI mock provider failed' } } }
       return
     }
+    if (process.env.DSH_CLI_MOCK_COUNT === '1') {
+      const counters = globalThis as { __spec02LlmCalls?: number }
+      counters.__spec02LlmCalls = (counters.__spec02LlmCalls ?? 0) + 1
+    }
     const toolResult = options.messages.at(-1)?.content.find(block => block.type === 'tool-result')
     if (toolResult === undefined) {
+      if (process.env.DSH_CLI_MOCK_TOOL === 'sci_run_code') {
+        const sciArgs = JSON.stringify(JSON.parse(process.env.DSH_CLI_MOCK_TOOL_ARGS ?? '{}'))
+        yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+        yield { type: 'tool-call-delta', index: 0, id: CallId('cli-smoke-call'), name: 'sci_run_code', argumentsDelta: sciArgs }
+        yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: CallId('cli-smoke-call'), name: 'sci_run_code', arguments: sciArgs } }
+        yield { type: 'usage', usage: { inputTokens: 11, outputTokens: 3, cacheReadTokens: 2 } }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+        return
+      }
       const command = process.env.DSH_CLI_MOCK_COMMAND ?? 'printf CLI_TOOL_ROUND_TRIP'
       const args = JSON.stringify({ command, description: 'Prove the CLI tool round trip.' })
       yield { type: 'block-start', index: 0, blockType: 'tool-call' }
