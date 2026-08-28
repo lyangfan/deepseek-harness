@@ -46,6 +46,11 @@ const evidenceConfig: EvidenceCore.Config = {
   runnerMaxDeclaredOutputs: 64,
   runnerLogCaptureMaxBytes: 1_048_576,
   materialHashCacheMaxEntries: 4_096,
+  professionalToolsEnabled: false,
+  professionalOutputRoot: '.evidence-professional-outputs',
+  professionalDefaultTimeoutMs: 60_000,
+  professionalLogCaptureMaxBytes: 1_048_576,
+  professionalMaxPlanOutputs: 32,
   captureOutboxMaxBytes: 67_108_864,
   captureOutboxMaxBoundaries: 1_000,
   storageSoftBytes: 1_073_741_824,
@@ -83,9 +88,11 @@ async function boot(
     // default composition stays activation-complete.
     await ctx.plugin(LocalFileSystem)
     await ctx.plugin(LocalSubprocessRuntime)
-    // SPEC-01 regressions never invoke the Runner Tool, so a minimal tools service
-    // satisfies registration; the real ToolRuntime path is covered by the Loader app.
+    // SPEC-01 regressions never invoke the Runner or professional Tools, so minimal
+    // tools/jobs services satisfy registration; the real paths are covered by the
+    // Loader app compositions.
     ctx.provide('tools', { register: () => {} } as never)
+    ctx.provide('jobs', { start: () => 'sci-tool-0' } as never)
     configure?.(ctx)
     await ctx.plugin(EvidenceCore, config)
     return { ctx, root }
@@ -133,6 +140,11 @@ describe('S01-A13 budget and overflow gates', () => {
     runnerEnabled: true,
     runnerOutputRoot: '.evidence-runner-outputs',
     runnerDefaultTimeoutMs: 60_000,
+    professionalToolsEnabled: false,
+    professionalOutputRoot: '.evidence-professional-outputs',
+    professionalDefaultTimeoutMs: 60_000,
+    professionalLogCaptureMaxBytes: 1_048_576,
+    professionalMaxPlanOutputs: 32,
     runnerMaxDeclaredOutputs: 64,
     runnerLogCaptureMaxBytes: 1_048_576,
     materialHashCacheMaxEntries: 4_096,
@@ -204,6 +216,11 @@ describe('S01-A09 transient read failures retry within the §8.5 budget', () => 
     runnerEnabled: true,
     runnerOutputRoot: '.evidence-runner-outputs',
     runnerDefaultTimeoutMs: 60_000,
+    professionalToolsEnabled: false,
+    professionalOutputRoot: '.evidence-professional-outputs',
+    professionalDefaultTimeoutMs: 60_000,
+    professionalLogCaptureMaxBytes: 1_048_576,
+    professionalMaxPlanOutputs: 32,
     runnerMaxDeclaredOutputs: 64,
     runnerLogCaptureMaxBytes: 1_048_576,
     materialHashCacheMaxEntries: 4_096,
@@ -344,6 +361,7 @@ describe('S01-A15 real persistence/storage contract matrix', () => {
     ctx.provide('fs', {} as never)
     ctx.provide('subprocess', {} as never)
     ctx.provide('tools', { register: vi.fn() } as never)
+    ctx.provide('jobs', { start: () => 'sci-tool-0' } as never)
     const readFrom = vi.fn(async () => { throw new Error('background read is outside the measured hot path') })
     ctx.provide('sessionPersistence', {
       listSnapshots: vi.fn(async () => []),

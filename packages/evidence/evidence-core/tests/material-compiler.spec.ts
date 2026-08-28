@@ -175,7 +175,7 @@ describe('S02-A15 ambient defense', () => {
       sourceTimeUpperBound: 105,
       selectionRevision: fixture.selection.revision,
       selectionRuleDigest: fixture.selection.digest,
-      material: { accepted: new Map(), versions: new Map(), entities: new Map(), observations: new Map() },
+      material: { accepted: new Map(), versions: new Map(), entities: new Map(), observations: new Map(), finalizations: new Map() },
     })
     expect(payload.nodes.filter(node => node.nodeKind === 'Run').every(node => node.payloadSchema === 'animalge.run.event-backed/v1')).toBe(true)
     expect(payload.nodes.some(node => node.nodeKind === 'ArtifactVersion')).toBe(false)

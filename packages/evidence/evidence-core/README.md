@@ -59,9 +59,26 @@ Zero. Evidence capture and compilation add no model-request text.
 
 Independent. The package does not modify model request prefixes or tool schemas.
 
+### Professional tool runtime (SPEC-03)
+
+#### What the model sees
+
+Four normal DSH Tools registered through the shared `defineProfessionalTool()` factory: `plink_cli`, `himvp_cli`, `r_script`, and `cmplot_call`. Each exposes one typed input bundle, a bounded set of structured parameters, verbatim native-flag passthrough (`native_args`), and a minimal referencing result: `runId`, `outcome`, `outputCompleteness` (+reason), `outputManifestRef`, formal `outputs[]`, and `receiptSubmissionRef`. Guided usage lives in versioned guide files referenced by each adapter spec, never inside the Tool schema.
+
+#### Token effect
+
+Bounded: the result JSON only (no tables, logs, report bodies, or image bytes). Agents read artifact content through normal file reads against exact ArtifactVersion references.
+
+#### KV Cache effect
+
+Tool schemas are stable across calls; result cards replay from persisted content and bounded presentation metadata only.
+
 ## Known Limitations and Deferred Work
 
 - Version `0` is local, single-user, and one-host-process-writer only.
 - `accountedBytes` is canonical logical record usage, not physical disk consumption.
 - SPEC-01 captures deterministic Run and terminal Observation provenance only. Artifact, Receipt, SourceAnchor, semantic channels, UI, domain Tools, Bundles, and a production `animalge-open` preset remain outside this package.
 - Selection is exact Tool-name matching. Changing its revision or rule digest recompiles from authoritative captures; it never reruns the Tool.
+- Professional adapters are validated against fake executables/R packages only (SPEC-03 §13.3); real-software evidence, the Genetics Bundle, the `animalge-open` Preset, routing enforcement, and `tested_on_exact_revision` belong to SPEC-07.
+- The TestedEnvironmentRevision identity covers the frozen component digests probed at freeze time; provisioning itself is SPEC-07 scope.
+- `ctx.jobs` projections are process-local; after an unclean exit, active output reservations stay conservatively `abandoned` and are never re-opened (SPEC-03 §8.1).

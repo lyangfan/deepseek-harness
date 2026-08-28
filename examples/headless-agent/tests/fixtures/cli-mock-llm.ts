@@ -37,13 +37,17 @@ class CliMockAdapter extends LlmAdapter {
       const counters = globalThis as { __spec02LlmCalls?: number }
       counters.__spec02LlmCalls = (counters.__spec02LlmCalls ?? 0) + 1
     }
+    // Scan backwards: some tool pipelines append trailing non-result messages after the
+    // tool result; the reply branch must still trigger for any completed tool call.
     const toolResult = options.messages.at(-1)?.content.find(block => block.type === 'tool-result')
+      ?? [...options.messages].reverse().map(message => message.content.find(block => block.type === 'tool-result')).find(block => block !== undefined)
     if (toolResult === undefined) {
-      if (process.env.DSH_CLI_MOCK_TOOL === 'sci_run_code') {
-        const sciArgs = JSON.stringify(JSON.parse(process.env.DSH_CLI_MOCK_TOOL_ARGS ?? '{}'))
+      if (process.env.DSH_CLI_MOCK_TOOL === 'sci_run_code' || process.env.DSH_CLI_MOCK_TOOL === 'plink_cli') {
+        const toolName = process.env.DSH_CLI_MOCK_TOOL
+        const toolArgs = JSON.stringify(JSON.parse(process.env.DSH_CLI_MOCK_TOOL_ARGS ?? '{}'))
         yield { type: 'block-start', index: 0, blockType: 'tool-call' }
-        yield { type: 'tool-call-delta', index: 0, id: CallId('cli-smoke-call'), name: 'sci_run_code', argumentsDelta: sciArgs }
-        yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: CallId('cli-smoke-call'), name: 'sci_run_code', arguments: sciArgs } }
+        yield { type: 'tool-call-delta', index: 0, id: CallId('cli-smoke-call'), name: toolName, argumentsDelta: toolArgs }
+        yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: CallId('cli-smoke-call'), name: toolName, arguments: toolArgs } }
         yield { type: 'usage', usage: { inputTokens: 11, outputTokens: 3, cacheReadTokens: 2 } }
         yield { type: 'finish', reason: { kind: 'tool-calls' } }
         return

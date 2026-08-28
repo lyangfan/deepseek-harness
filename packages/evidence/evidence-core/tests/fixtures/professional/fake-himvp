@@ -1,0 +1,30 @@
+#!/bin/bash
+# Fake HiMVP executable (SPEC-03 §13.3 fixture): fixed-header association table.
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  echo "HiMVP v0.fake"
+  exit 0
+fi
+OUT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) OUT="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$OUT" ]; then
+  echo "fake-himvp: --out is required" >&2
+  exit 2
+fi
+if [ "${FAKE_HIMVP_FAIL:-0}" = "1" ]; then
+  echo "fake-himvp: injected failure" >&2
+  exit 1
+fi
+if [ "${FAKE_HIMVP_BAD_HEADER:-0}" = "1" ]; then
+  printf 'snp\tchromosome\tbase\tpvalue\n' > "${OUT}.assoc.tsv"
+else
+  printf 'SNP\tCHR\tPOS\tP\n' > "${OUT}.assoc.tsv"
+  printf 'snp1\t1\t100\t0.05\n' >> "${OUT}.assoc.tsv"
+  printf 'snp2\t2\t200\t0.5\n' >> "${OUT}.assoc.tsv"
+fi
+echo "fake-himvp done" > "${OUT}.log"

@@ -1,0 +1,42 @@
+#!/bin/bash
+# Fake PLINK executable (SPEC-03 §13.3 fixture): deterministic version answer and outputs.
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  echo "PLINK v1.90fake"
+  exit 0
+fi
+OUT=""
+BFILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out) OUT="$2"; shift 2 ;;
+    --bfile) BFILE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$OUT" ] || [ -z "$BFILE" ]; then
+  echo "fake-plink: --bfile and --out are required" >&2
+  exit 2
+fi
+if [ "${FAKE_PLINK_FAIL:-0}" = "1" ]; then
+  echo "fake-plink: injected failure" >&2
+  exit 1
+fi
+BIM_ROWS=$(wc -l < "${BFILE}.bim" | tr -d ' ')
+FAM_ROWS=$(wc -l < "${BFILE}.fam" | tr -d ' ')
+GROUPS=$(( (FAM_ROWS + 3) / 4 ))
+BED_BYTES=$(( 3 + BIM_ROWS * GROUPS ))
+if [ "${FAKE_PLINK_BAD_BED:-0}" = "1" ]; then
+  BED_BYTES=$(( BED_BYTES + 1 ))
+fi
+{ printf '\x6c\x1b\x01\x01'; head -c $(( BED_BYTES - 4 )) /dev/zero; } > "${OUT}.bed"
+awk -F'\t' '{ print $1 "\tfake\t" NR "\t1\tA\tG" }' "${BFILE}.bim" > "${OUT}.bim"
+if [ "${FAKE_PLINK_MISSING_FAM:-0}" != "1" ]; then
+  cp "${BFILE}.fam" "${OUT}.fam"
+fi
+{
+  echo "fake-plink start"
+  echo "bim rows: ${BIM_ROWS}"
+  echo "fam rows: ${FAM_ROWS}"
+  echo "fake-plink done"
+} > "${OUT}.log"

@@ -1,0 +1,56 @@
+#!/bin/bash
+# Fake Rscript (SPEC-03 §13.3 fixture): deterministic minimal R semantics.
+# A script's `# FAKE-OUTPUT: <path>` comments declare text files this interpreter creates;
+# `# FAKE-OUTPUT-PNG: <path>` writes a minimal valid PNG. `$1`/`$2`/... substitute the
+# script arguments. `# FAKE-FAIL: 1` exits non-zero.
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  echo "R version 4.4.0fake -- fake Rscript"
+  exit 0
+fi
+SCRIPT=""
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --*) shift ;; # controlled entry flags such as --vanilla precede the script
+    *)
+      if [ -z "$SCRIPT" ]; then
+        SCRIPT="$1"
+      else
+        ARGS+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+if [ -z "$SCRIPT" ]; then
+  echo "fake-rscript: script path required" >&2
+  exit 2
+fi
+if grep -q '^# FAKE-FAIL: 1$' "$SCRIPT"; then
+  echo "fake-rscript: injected script failure" >&2
+  exit 1
+else
+  :
+fi
+subst() {
+  local OUT="$1"
+  if [ "${#ARGS[@]}" -gt 0 ]; then
+    for i in "${!ARGS[@]}"; do
+      local PAT
+      PAT="\$$((i + 1))"
+      OUT="${OUT//$PAT/${ARGS[$i]}}"
+    done
+  fi
+  printf '%s' "$OUT"
+}
+while IFS= read -r line; do
+  case "$line" in
+    '# FAKE-OUTPUT: '*)
+      printf 'fake-r-output\n' > "$(subst "${line#\# FAKE-OUTPUT: }")"
+      ;;
+    '# FAKE-OUTPUT-PNG: '*)
+      printf '\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d' > "$(subst "${line#\# FAKE-OUTPUT-PNG: }")"
+      ;;
+  esac
+done < "$SCRIPT"
