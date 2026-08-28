@@ -59,6 +59,20 @@ Zero. Evidence capture and compilation add no model-request text.
 
 Independent. The package does not modify model request prefixes or tool schemas.
 
+### Candidate-semantics channel (SPEC-04)
+
+#### What the model sees
+
+When `evidenceModel` is explicitly configured, the background semantic channel sends one additional model request per completed persisted turn: a bounded projection of public user/assistant text (text blocks only — reasoning blocks are hard-excluded), compact tool-result summaries, pending run summaries, and minimal existing-candidate summaries. The full canonical request bytes are persisted as a log-only `evidence/model-request` session event before dispatch, so "what the model saw" is always reconstructible from the session log. The chat Agent itself never sees these requests.
+
+#### Token effect
+
+One auxiliary request per semantic attempt, sized by the turn content with declared per-item truncation (no quotas). Zero requests while the session-level "AI candidate extraction" switch is off or the route is unconfigured; the deterministic channel then continues untouched.
+
+#### KV Cache effect
+
+Independent auxiliary calls through `ctx.llm` with the explicit `evidenceModel` route; they never share the chat Agent's request prefix.
+
 ### Professional tool runtime (SPEC-03)
 
 #### What the model sees

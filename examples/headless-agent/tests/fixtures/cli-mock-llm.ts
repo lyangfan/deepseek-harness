@@ -33,6 +33,34 @@ class CliMockAdapter extends LlmAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { code: 'SERVER', message: 'CLI mock provider failed' } } }
       return
     }
+    if (process.env.DSH_CLI_MOCK_EVIDENCE === '1') {
+      // SPEC-04 evidence mode: deterministic structured extraction for the semantic
+      // channel. Counting lets the suites assert zero dispatch while the switch is off.
+      const counters = globalThis as { __spec04EvidenceCalls?: number }
+      counters.__spec04EvidenceCalls = (counters.__spec04EvidenceCalls ?? 0) + 1
+      const output = evidenceOutputFor(options)
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: output }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: output } }
+      yield { type: 'usage', usage: { inputTokens: 31, outputTokens: 17 } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
+    if (process.env.DSH_CLI_MOCK_EVIDENCE === 'fail') {
+      const counters = globalThis as { __spec04EvidenceCalls?: number }
+      counters.__spec04EvidenceCalls = (counters.__spec04EvidenceCalls ?? 0) + 1
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'SERVER', message: 'evidence mock failure' } } }
+      return
+    }
+    if (process.env.DSH_CLI_MOCK_EVIDENCE === 'garbage') {
+      const counters = globalThis as { __spec04EvidenceCalls?: number }
+      counters.__spec04EvidenceCalls = (counters.__spec04EvidenceCalls ?? 0) + 1
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: 'not json at all' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: 'not json at all' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
     if (process.env.DSH_CLI_MOCK_COUNT === '1') {
       const counters = globalThis as { __spec02LlmCalls?: number }
       counters.__spec02LlmCalls = (counters.__spec02LlmCalls ?? 0) + 1
@@ -77,6 +105,50 @@ class CliMockAdapter extends LlmAdapter {
 
 export const name = 'cli-mock-llm'
 export const inject = ['llm']
+
+const EVIDENCE_SYSTEM_MARKER = 'AnimalGE evidence candidate-semantics extractor'
+
+/**
+ * Deterministic extraction fixture for the SPEC-04 REAL composition. The semantic channel
+ * reconstructs its messages from the persisted canonical requestPayload, so the span is
+ * derived from the actual last assistant message the projection carried — the fixture can
+ * never invent text that was not model-visible (D-164 reuse semantics).
+ */
+function evidenceOutputFor(options: GenerateOptions): string {
+  const assistant = [...options.messages].reverse().find(message => message.role === 'assistant')
+  const system = options.system ?? ''
+  if (!system.includes(EVIDENCE_SYSTEM_MARKER) || assistant === undefined) {
+    return JSON.stringify({
+      schemaVersion: 'animalge.semantic-extraction/v1',
+      candidates: [],
+      relations: [],
+      sameAsProposals: [],
+      runSelections: [],
+    })
+  }
+  const text = assistant.content
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('')
+  const spanEnd = Math.min(24, text.length)
+  const candidateText = text.slice(0, spanEnd)
+  return [
+    '```json',
+    JSON.stringify({
+      schemaVersion: 'animalge.semantic-extraction/v1',
+      candidates: [
+        { localId: 'c1', sourceEventSeq: Number(process.env.DSH_CLI_MOCK_EVIDENCE_SEQ ?? '-1'), spanStart: 0, spanEnd, subtype: 'interpretation', text: candidateText },
+        { localId: 'c2', sourceEventSeq: Number(process.env.DSH_CLI_MOCK_EVIDENCE_SEQ ?? '-1'), spanStart: 0, spanEnd, subtype: 'limitation', text: candidateText },
+      ],
+      relations: [
+        { type: 'qualifies', fromRef: { kind: 'BatchCandidate', localId: 'c2' }, toRef: { kind: 'BatchCandidate', localId: 'c1' }, sourceEventSeqs: [Number(process.env.DSH_CLI_MOCK_EVIDENCE_SEQ ?? '-1')] },
+      ],
+      sameAsProposals: [],
+      runSelections: [],
+    }),
+    '```',
+  ].join('\n')
+}
 
 /** Register the keyless `cli-mock` adapter. */
 export function apply(ctx: Context): void {

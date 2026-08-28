@@ -361,7 +361,12 @@ export async function runProfessionalTool<P>(
     ? undefined
     : [...store.locationObservations.entries()]
       .map(([, row]) => row)
-      .filter(row => row.locator === codeComponent.locator && row.observedAt < bundle.createdAt)
+      // Exclude THIS bundle's own capture: hashing can span a millisecond, which made the
+      // call's own observation look like a prior in-session capture (runtime flake found
+      // during SPEC-04 regression; the frozen contract is "first capture by this call").
+      .filter(row => row.locator === codeComponent.locator
+        && row.locationObservationId !== codeComponent.observationId
+        && row.observedAt < bundle.createdAt)
       .sort((left, right) => right.observedAt - left.observedAt)[0]
   const codeOriginFacts: CodeOriginFacts = {
     firstObservedAt: codePriorObservation?.observedAt ?? null,

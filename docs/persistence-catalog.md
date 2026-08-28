@@ -393,6 +393,23 @@ Types: [ContentBlock](subsystems/core.md) · [TokenUsage](subsystems/llm-streami
 
 Source: [`packages/compaction/compaction/src/types.ts:33`](../packages/compaction/compaction/src/types.ts)
 
+### `evidence/*`
+
+<a id="evidencemodel-request--log-only"></a>
+
+#### `evidence/model-request` — log-only
+
+```ts persistence-catalog
+/**
+ * Durable, non-surface record of one evidence model request persisted strictly before
+ * dispatch (SPEC-04 §6). Log-only: it is a compiler-internal auxiliary call, never a
+ * graph Run and never capture input (design §8.3 / detailed contract §3.6).
+ */
+'evidence/model-request': EvidenceModelRequestEventData
+```
+
+Source: [`packages/evidence/evidence-core/src/semantic/events.ts:32`](../packages/evidence/evidence-core/src/semantic/events.ts)
+
 ### `feedback/*`
 
 <a id="feedbackrecord--log-only"></a>
