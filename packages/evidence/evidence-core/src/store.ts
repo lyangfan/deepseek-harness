@@ -10,6 +10,8 @@ import { newCompileAttemptId, newEvidenceGraphId, newRecoveryId, newStagingId } 
 import {
   artifactRecordSchema,
   artifactVersionCoreSchema,
+  candidateRecordSchema,
+  candidateRelationRecordSchema,
   capturedInvocationSchema,
   compileAttemptSchema,
   compileOutboxSchema,
@@ -20,16 +22,21 @@ import {
   headCommitSchema,
   inputBundleSchema,
   locationObservationSchema,
+  modelCallSchema,
+  modelRunSelectionSchema,
   outputFinalizationSchema,
   outputManifestSchema,
   outputPlanSchema,
   outputReservationSchema,
   preflightReportSchema,
+  proposalValidationSchema,
   quarantineRecordSchema,
   queueClockSchema,
   receiptAcceptanceSchema,
   receiptLaneSchema,
   receiptSubmissionSchema,
+  semanticLaneSchema,
+  semanticSwitchSchema,
   sessionGraphBootstrapSchema,
   sourceAnchorSchema,
   stagingRecordSchema,
@@ -38,7 +45,7 @@ import {
   usageSchema,
 } from './schema.ts'
 import type { ArtifactRecord, ArtifactVersionCore, CapturedInvocation, CompileAttempt, CompileOutbox, ContextEntityRecord, EnvironmentStateRecord, GraphRecord, HeadCommit, LocationObservation, QuarantineRecord, QueueClock, ReceiptAcceptanceRecord, ReceiptLaneRecord, ReceiptSubmission, SessionGraphBootstrap, SourceAnchorRecord, StagingRecord, UsageRecord } from './schema.ts'
-import type { CompileAttemptId, CurrentHeadV1, EnvironmentStateV1, EvidenceGraphId, EvidenceGraphScopeV1, EvidenceRunId, EvidenceSnapshotPayloadV1, InputBundleV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, RecoveryId, Sha256Digest, StagingId, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
+import type { CandidateRecordV1, CandidateRelationRecordV1, CandidateStatementId, CompileAttemptId, CurrentHeadV1, EnvironmentStateV1, EvidenceGraphId, EvidenceGraphScopeV1, EvidenceRunId, EvidenceSnapshotPayloadV1, InputBundleV1, ModelCallId, ModelCallRecordV1, ModelRunSelectionRecordV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ProposalValidationRecordV1, RecoveryId, SemanticLaneV1, SemanticSwitchV1, Sha256Digest, StagingId, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
 import { snapshotRecord, verifyStoredSnapshot } from './integrity.ts'
 
 type CommitKey = `${string}:${number}`
@@ -58,6 +65,13 @@ type OutputReservationKey = string
 type OutputPlanKey = string
 type OutputManifestKey = string
 type OutputFinalizationKey = `${string}:${number}`
+type SemanticLaneKey = EvidenceGraphId
+type SemanticSwitchKey = EvidenceGraphId
+type ModelCallKey = ModelCallId
+type CandidateKey = CandidateStatementId
+type CandidateRelationKey = string
+type ModelRunSelectionKey = string
+type ProposalValidationKey = string
 
 /** Durable declaration shared by both JSON and SQLite Storage backends. */
 export const evidenceDomainSpec = defineDomain({
@@ -95,6 +109,15 @@ export const evidenceDomainSpec = defineDomain({
     output_plans: domainTable<OutputPlanKey, OutputPlanV1>(outputPlanSchema),
     output_manifests: domainTable<OutputManifestKey, OutputManifestV1>(outputManifestSchema),
     output_finalizations: domainTable<OutputFinalizationKey, OutputFinalizationRecordV1>(outputFinalizationSchema),
+    // SPEC-04 candidate-semantics owner tables (append-only ledgers; semantic_lane and
+    // semantic_switch are the only mutable single-record ones, §10.1).
+    semantic_lane: domainTable<SemanticLaneKey, SemanticLaneV1>(semanticLaneSchema),
+    semantic_switch: domainTable<SemanticSwitchKey, SemanticSwitchV1>(semanticSwitchSchema),
+    model_calls: domainTable<ModelCallKey, ModelCallRecordV1>(modelCallSchema),
+    candidate_records: domainTable<CandidateKey, CandidateRecordV1>(candidateRecordSchema),
+    candidate_relations: domainTable<CandidateRelationKey, CandidateRelationRecordV1>(candidateRelationRecordSchema),
+    model_run_selections: domainTable<ModelRunSelectionKey, ModelRunSelectionRecordV1>(modelRunSelectionSchema),
+    proposal_validations: domainTable<ProposalValidationKey, ProposalValidationRecordV1>(proposalValidationSchema),
   },
 })
 
@@ -163,6 +186,47 @@ export class EvidenceStore {
   get outputPlans(): KvTable<OutputPlanKey, OutputPlanV1> { return this.domain.table('output_plans') }
   get outputManifests(): KvTable<OutputManifestKey, OutputManifestV1> { return this.domain.table('output_manifests') }
   get outputFinalizations(): KvTable<OutputFinalizationKey, OutputFinalizationRecordV1> { return this.domain.table('output_finalizations') }
+  get semanticLane(): KvTable<SemanticLaneKey, SemanticLaneV1> { return this.domain.table('semantic_lane') }
+  get semanticSwitch(): KvTable<SemanticSwitchKey, SemanticSwitchV1> { return this.domain.table('semantic_switch') }
+  get modelCalls(): KvTable<ModelCallKey, ModelCallRecordV1> { return this.domain.table('model_calls') }
+  get candidateRecords(): KvTable<CandidateKey, CandidateRecordV1> { return this.domain.table('candidate_records') }
+  get candidateRelations(): KvTable<CandidateRelationKey, CandidateRelationRecordV1> { return this.domain.table('candidate_relations') }
+  get modelRunSelections(): KvTable<ModelRunSelectionKey, ModelRunSelectionRecordV1> { return this.domain.table('model_run_selections') }
+  get proposalValidations(): KvTable<ProposalValidationKey, ProposalValidationRecordV1> { return this.domain.table('proposal_validations') }
+
+  /** The semantic lane's only mutable record: single-record atomic update (SPEC-04 §10.1). */
+  async updateSemanticLane(
+    graphId: EvidenceGraphId,
+    update: (current: SemanticLaneV1 | undefined) => SemanticLaneV1,
+  ): Promise<SemanticLaneV1> {
+    return this.enqueue(async () => {
+      const next = update(this.semanticLane.get(graphId))
+      await this.semanticLane.put(graphId, next)
+      await this.recountNow()
+      return next
+    })
+  }
+
+  /** The session-level switch's only mutable record: single-record atomic update (SPEC-04 §4.3). */
+  async updateSemanticSwitch(
+    graphId: EvidenceGraphId,
+    update: (current: SemanticSwitchV1 | undefined) => SemanticSwitchV1,
+  ): Promise<SemanticSwitchV1> {
+    return this.enqueue(async () => {
+      const next = update(this.semanticSwitch.get(graphId))
+      await this.semanticSwitch.put(graphId, next)
+      await this.recountNow()
+      return next
+    })
+  }
+
+  semanticLaneFor(graphId: EvidenceGraphId): SemanticLaneV1 | undefined {
+    return this.semanticLane.get(graphId)
+  }
+
+  semanticSwitchFor(graphId: EvidenceGraphId): SemanticSwitchV1 | undefined {
+    return this.semanticSwitch.get(graphId)
+  }
 
   /**
    * Owner-serialized immutable put for one SPEC-02 material record (§10.1).
@@ -306,6 +370,11 @@ export class EvidenceStore {
       ['source_anchors', this.sourceAnchors], ['receipt_submissions', this.receiptSubmissions],
       ['receipt_acceptances', this.receiptAcceptances],
       ['output_finalizations', this.outputFinalizations], ['output_manifests', this.outputManifests],
+      // SPEC-04 §10.2-8: the graph-affecting candidate ledgers join the idempotency key;
+      // model_calls/proposal_validations are excluded (failures and rejections never
+      // change graph state and must not force a new Snapshot).
+      ['candidate_records', this.candidateRecords], ['candidate_relations', this.candidateRelations],
+      ['model_run_selections', this.modelRunSelections],
     ]
     for (const [name, table] of tables) {
       const rows: Array<[string, unknown]> = [...table.entries()].map(([key, value]) => [key, value])
@@ -554,6 +623,38 @@ export class EvidenceStore {
 
   async startAttempt(attemptId: CompileAttemptId): Promise<CompileAttempt> {
     return this.enqueue(() => this.attempts.update(attemptId, current => ({ ...current, state: 'running', startedAt: Date.now(), updatedAt: Date.now() })))
+  }
+
+  /**
+   * Create and start one semantic attempt outside the per-graph outbox (SPEC-04 §9.2).
+   * Semantic attempts never share the outbox row: a parked semantic retry must not
+   * block deterministic compilation for the same Graph (D-116 shared-fate rule).
+   */
+  async startSemanticAttempt(options: {
+    readonly graphId: EvidenceGraphId
+    readonly sessionId: SessionId
+    readonly head: CurrentHeadV1
+    readonly targetNextSeqExclusive: number
+    readonly revisions: CompileAttempt['revisions']
+    readonly semantic: NonNullable<CompileAttempt['semantic']>
+  }): Promise<CompileAttempt> {
+    return this.enqueue(async () => {
+      const attemptId = newCompileAttemptId()
+      const retryOf = [...this.attempts.entries()].map(([, candidate]) => candidate)
+        .filter(candidate => candidate.graphId === options.graphId && candidate.channel === 'semantic'
+          && candidate.targetNextSeqExclusive === options.targetNextSeqExclusive
+          && ['failed', 'interrupted', 'cancelled'].includes(candidate.state))
+        .sort((left, right) => right.updatedAt - left.updatedAt)[0]?.attemptId ?? null
+      const attempt: CompileAttempt = {
+        recordVersion: 'animalge.compile-attempt/v1', attemptId, graphId: options.graphId, sessionId: options.sessionId,
+        fromNextSeqExclusive: this.snapshotWatermark(options.head.snapshotDigest), targetNextSeqExclusive: options.targetNextSeqExclusive,
+        baseSnapshotDigest: options.head.snapshotDigest, baseHeadRevision: options.head.headRevision, state: 'running', stage: 'capture', revisions: options.revisions,
+        retryOf, startedAt: Date.now(), updatedAt: Date.now(), terminalError: null, stagingId: null, resultSnapshotDigest: null,
+        channel: 'semantic', semantic: options.semantic,
+      }
+      await this.putImmutable(this.attempts, attemptId, attempt)
+      return attempt
+    })
   }
 
   async commit(attempt: CompileAttempt, payload: EvidenceSnapshotPayloadV1, kind: 'compile' | 'recovery' = 'compile'): Promise<CurrentHeadV1> {
@@ -810,6 +911,21 @@ export class EvidenceStore {
         if (attempt.state === 'queued' && ![...this.outbox.entries()].some(([, row]) => row.inFlightAttemptId === id)) {
           await this.attempts.put(id, { ...attempt, state: 'cancelled', updatedAt: Date.now(), terminalError: { code: 'dequeue_not_linearized', stage: attempt.stage, retryable: false, messageDigest: sha256Digest('dequeue_not_linearized') } })
         }
+        // SPEC-04 §9.3: semantic attempts carry no outbox linkage; a running one found at
+        // startup is a crash window — committed evidence settles it succeeded, otherwise
+        // interrupted, and the semantic lane re-admits idempotently from its watermark.
+        if (attempt.state === 'running' && attempt.channel === 'semantic') {
+          const stage = attempt.stagingId === null ? undefined : this.staging.get(attempt.stagingId)
+          const head = this.heads.get(attempt.graphId)
+          const committed = attempt.resultSnapshotDigest !== null && head?.snapshotDigest === attempt.resultSnapshotDigest
+            && (this.headCommits.get(`${attempt.graphId}:${head.headRevision}`) !== undefined || stage?.candidateSnapshotDigest === head.snapshotDigest)
+          if (committed) {
+            await this.attempts.put(id, { ...attempt, state: 'succeeded', stage: 'finalize', updatedAt: Date.now() })
+            if (stage !== undefined) await this.staging.put(stage.stagingId, { ...stage, state: 'committed' })
+          } else {
+            await this.attempts.put(id, { ...attempt, state: 'interrupted', updatedAt: Date.now(), terminalError: { code: 'semantic_interrupted', stage: attempt.stage, retryable: true, messageDigest: sha256Digest('semantic_interrupted') } })
+          }
+        }
       }
       await this.recountNow()
     })
@@ -900,6 +1016,10 @@ export class EvidenceStore {
       ['environment_revisions', this.environmentRevisions], ['environment_state', this.environmentState],
       ['output_reservations', this.outputReservations], ['output_plans', this.outputPlans],
       ['output_manifests', this.outputManifests], ['output_finalizations', this.outputFinalizations],
+      ['semantic_lane', this.semanticLane], ['semantic_switch', this.semanticSwitch],
+      ['model_calls', this.modelCalls], ['candidate_records', this.candidateRecords],
+      ['candidate_relations', this.candidateRelations], ['model_run_selections', this.modelRunSelections],
+      ['proposal_validations', this.proposalValidations],
     ]
     let accountedBytes = 0
     let recordCount = 0

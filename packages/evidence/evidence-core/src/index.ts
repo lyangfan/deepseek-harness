@@ -26,6 +26,10 @@ import { applySciRunCodeTool } from './runner/index.ts'
 import { applyProfessionalTools, PROFESSIONAL_CAPTURE_PROFILE_IDS } from './professional/index.ts'
 import { SCIENTIFIC_TOOL_PROVIDER_ID } from './professional/runtime.ts'
 import { registerActiveEvidenceStore } from './professional/environment.ts'
+import type {} from './semantic/events.ts'
+import { resolveEvidenceModelRoute, resolveSemanticProjectionConfig } from './semantic/model-route.ts'
+import type { EvidenceModelRouteV1, SemanticProjectionConfig } from './semantic/model-route.ts'
+import { SemanticLane } from './semantic/lane.ts'
 
 export type * from './types.ts'
 export { canonicalDigest, canonicalJson, parseCanonicalJson, sha256Digest } from './canonical-json.ts'
@@ -44,6 +48,13 @@ export { applyProfessionalTools, PROFESSIONAL_CAPTURE_PROFILE_IDS } from './prof
 export { SCIENTIFIC_TOOL_PROVIDER_ID } from './professional/runtime.ts'
 export { freezeTestedEnvironmentRevision, freezeCurrentEnvironment, registerActiveEvidenceStore, currentEnvironmentRevision, EnvironmentGateError } from './professional/environment.ts'
 export { EvidenceStore, EvidenceStoreError } from './store.ts'
+export { resolveEvidenceModelRoute, resolveSemanticProjectionConfig, ModelRouteError } from './semantic/model-route.ts'
+export type { EvidenceModelRouteV1, SemanticProjectionConfig } from './semantic/model-route.ts'
+export { SemanticLane, SemanticLaneError } from './semantic/lane.ts'
+export { semanticSwitchEnabled, setSemanticSwitchEnabled, SEMANTIC_SWITCH_DEFAULT } from './semantic/switch.ts'
+export { semanticSnapshotFor, CANDIDATE_CONTRACT_REVISION } from './semantic/candidates.ts'
+export { validateExtractionOutput, semanticExtractionOutputSchema } from './semantic/output-schema.ts'
+export { buildSemanticProjection, SEMANTIC_SYSTEM_PROMPT } from './semantic/projection.ts'
 
 export const name = 'evidence-core'
 export const inject = ['storageDomain', 'sessionPersistence', 'sessions', 'fs', 'subprocess', 'tools', 'jobs']
@@ -104,6 +115,32 @@ export interface Config {
   readonly professionalLogCaptureMaxBytes: number
   /** Maximum roles accepted by one professional Output Plan. */
   readonly professionalMaxPlanOutputs: number
+  /** Explicit independent model route for the semantic channel (SPEC-04 §4.1); absent = not_configured. */
+  readonly evidenceModel?: {
+    /** Registered provider route; must be supplied together with model. */
+    readonly provider?: string
+    /** Exact model id on that route. */
+    readonly model?: string
+    /** Adapter-owned opaque reasoning effort id, passed through verbatim. */
+    readonly reasoningEffort?: string
+    /** Sampling temperature. */
+    readonly temperature?: number
+    /** Output token cap. */
+    readonly maxTokens?: number
+    /** Stop sequences. */
+    readonly stop?: string[]
+    /** Per-dispatch deadline in milliseconds. */
+    readonly timeoutMs?: number
+  }
+  /** Bounding configuration for the model-visible projection (SPEC-04 §11.1; bounds, not quotas). */
+  readonly semanticProjection?: {
+    /** Declared per-item truncation bound for message text (head_tail_v1). */
+    readonly perItemTruncationChars?: number
+    /** Declared truncation bound for tool-result summaries. */
+    readonly toolResultSummaryChars?: number
+    /** Declared truncation bound for pending run summaries. */
+    readonly runSummaryChars?: number
+  }
 }
 
 export const Config: s<Config> = s.object({
@@ -130,6 +167,20 @@ export const Config: s<Config> = s.object({
   professionalDefaultTimeoutMs: s.natural().min(1).default(600_000),
   professionalLogCaptureMaxBytes: s.natural().min(1).default(8_388_608),
   professionalMaxPlanOutputs: s.natural().min(1).default(64),
+  evidenceModel: s.object({
+    provider: s.string(),
+    model: s.string(),
+    reasoningEffort: s.string(),
+    temperature: s.number(),
+    maxTokens: s.natural().min(1),
+    stop: s.array(s.string()),
+    timeoutMs: s.natural().min(1),
+  }),
+  semanticProjection: s.object({
+    perItemTruncationChars: s.natural().min(1),
+    toolResultSummaryChars: s.natural().min(1),
+    runSummaryChars: s.natural().min(1),
+  }),
 })
 
 interface HotSessionState {
@@ -152,6 +203,8 @@ function resolveConfig(input: Config): {
   readonly config: Config
   readonly selection: CaptureSelection
   readonly eligible: ReadonlySet<string>
+  readonly route: EvidenceModelRouteV1 | undefined
+  readonly projectionConfig: SemanticProjectionConfig
 } {
   const eligible = [...input.eligibleAgentPresetIds].sort()
   if (eligible.length === 0
@@ -170,6 +223,8 @@ function resolveConfig(input: Config): {
     config: input,
     selection: resolveSelection(input.deterministicRunSelection.revision, input.deterministicRunSelection.exactToolNames),
     eligible: new Set(eligible),
+    route: resolveEvidenceModelRoute(input.evidenceModel),
+    projectionConfig: resolveSemanticProjectionConfig(input.semanticProjection),
   }
 }
 
@@ -183,6 +238,8 @@ class EvidenceRuntime {
   private gcTimer: ReturnType<typeof setInterval> | undefined
   private compileTimer: ReturnType<typeof setTimeout> | undefined
 
+  private readonly semantic: SemanticLane | undefined
+
   constructor(
     private readonly ctx: Context,
     private readonly store: EvidenceStore,
@@ -190,7 +247,10 @@ class EvidenceRuntime {
     private readonly selection: CaptureSelection,
     private readonly eligible: ReadonlySet<string>,
     private readonly lane: AcceptanceLane | undefined,
-  ) {}
+    semantic: SemanticLane | undefined,
+  ) {
+    this.semantic = semantic
+  }
 
   async start(): Promise<() => Promise<void>> {
     await this.store.recoverBootstraps()
@@ -202,7 +262,9 @@ class EvidenceRuntime {
     await this.scanCold()
     if (this.lane !== undefined) await this.lane.recoverPending(header => this.isEligible(header))
     const stopEvent = this.ctx.on('session/event', (session, event) => { this.onEvent(session, event) }, { global: true })
-    const stopCreated = this.ctx.on('session/created', (session) => { if (this.isEligible(session.header)) this.state(session.header) }, { global: true })
+    // A resumed Session carries its own backlog: seeding the hot state must also wake the
+    // compile loop so the semantic lane can drain without waiting for a new event hint.
+    const stopCreated = this.ctx.on('session/created', (session) => { if (this.isEligible(session.header)) { this.state(session.header); this.requestCompile() } }, { global: true })
     const stopDisposed = this.ctx.on('session/disposed', (session) => {
       if (this.isEligible(session.header)) this.hint(session.header, true)
       this.hot.delete(session.id)
@@ -392,12 +454,15 @@ class EvidenceRuntime {
     if (this.stopping || this.compileTimer !== undefined) return
     const usage = this.store.usage.get('global')
     if (usage !== undefined && usage.accountedBytes >= this.config.storageHardBytes) return
-    const next = this.store.nextRunnableAt()
+    const outboxNext = this.store.nextRunnableAt()
+    const semanticNext = this.semantic?.nextRetryAt()
+    const next = outboxNext === undefined && semanticNext === undefined ? undefined : Math.min(outboxNext ?? Number.MAX_SAFE_INTEGER,
+      semanticNext ?? Number.MAX_SAFE_INTEGER)
     if (next === undefined) return
     this.compileTimer = setTimeout(() => {
       this.compileTimer = undefined
       this.requestCompile()
-    }, Math.max(0, next - Date.now()))
+    }, Math.min(Math.max(0, next - Date.now()), 2_147_483_000))
   }
 
   private idle(row: CompileOutbox): boolean {
@@ -411,7 +476,12 @@ class EvidenceRuntime {
       const usage = this.store.usage.get('global')
       if (usage !== undefined && usage.accountedBytes >= this.config.storageHardBytes) return
       const row = this.store.runnableOutbox(Date.now())
-      if (row === undefined || !this.idle(row)) return
+      if (row === undefined || !this.idle(row)) {
+        // SPEC-04 §9.1: deterministic work first; the semantic lane drains the backlog only
+        // when no deterministic row is runnable, keeping global compile concurrency at one.
+        if (this.semantic !== undefined) await this.drainSemantic()
+        return
+      }
       const head = this.store.currentHead(row.graphId)
       const revisions = { canonicalization: 'animalge-c14n-json/v1' as const, identity: 'animalge-identity/v1' as const, compiler: COMPILER_REVISION, captureContract: 'animalge-capture/v1' as const, selectionRuleDigest: this.selection.digest }
       let attempt = await this.store.dequeue(row, head, revisions)
@@ -437,6 +507,9 @@ class EvidenceRuntime {
           targetNextSeqExclusive: row.targetNextSeqExclusive, sourceTimeUpperBound: last.time,
           selectionRevision: this.selection.revision, selectionRuleDigest: this.selection.digest,
           material: materialSnapshotFor(this.store, row.graphId),
+          // SPEC-04 §8.4: configured semantic layers join every deterministic snapshot with
+          // their frozen ledger and tri-state watermark; unconfigured stays legacy bytes.
+          ...(this.semantic === undefined ? {} : { semantic: this.semantic.semanticInputFor(row.graphId) }),
         })
         if (this.shouldStop()) { await this.store.cancelAttempt(attempt); return }
         await this.store.commit(attempt, payload)
@@ -459,6 +532,18 @@ class EvidenceRuntime {
     }
   }
 
+  private async drainSemantic(): Promise<void> {
+    if (this.semantic === undefined) return
+    for (;;) {
+      if (this.stopping) return
+      const entries = this.semantic.backlog()
+      const entry = entries[0]
+      if (entry === undefined) return
+      const progressed = await this.semantic.runOne(entry)
+      if (!progressed) return
+    }
+  }
+
   private async runGc(): Promise<void> {
     if (this.stopping) return
     try { await collectEvidenceGarbage(this.store, this.config) } catch (error: unknown) {
@@ -469,7 +554,7 @@ class EvidenceRuntime {
 
 /** Mount the private Evidence owner, the SPEC-02 material layer, and the bounded Session listeners. */
 export async function apply(ctx: Context, input: Config): Promise<void> {
-  const { config, selection, eligible } = resolveConfig(input)
+  const { config, selection, eligible, route, projectionConfig } = resolveConfig(input)
   const store = await EvidenceStore.open(ctx)
   store.hardLimitBytes = config.storageHardBytes
   // §3.2: the material layer requires ctx.fs and the Runner additionally requires the
@@ -481,9 +566,20 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     profiles: new Set([...REGISTERED_CAPTURE_PROFILE_IDS, ...PROFESSIONAL_CAPTURE_PROFILE_IDS]),
   })
   registerActiveEvidenceStore(store)
-  const runtime = new EvidenceRuntime(ctx, store, config, selection, eligible, lane)
+  // SPEC-04 §3.2: the semantic lane's abort/stopping state rides the runtime lifecycle —
+  // dispose aborts in-flight model calls (settled aborted, never misreported as model errors).
+  const semanticStop = { stopping: false }
+  const semanticAbort = new AbortController()
+  const semantic = route === undefined
+    ? undefined
+    : new SemanticLane(
+      ctx, store, route, projectionConfig, selection,
+      config.retryDelaysMs, config.maxRetryAttempts,
+      () => semanticStop.stopping, semanticAbort.signal,
+    )
+  const runtime = new EvidenceRuntime(ctx, store, config, selection, eligible, lane, semantic)
   const cleanup = await runtime.start()
-  ctx.effect(() => cleanup, 'evidence-core.runtime()')
+  ctx.effect(() => async () => { semanticStop.stopping = true; semanticAbort.abort(new Error('evidence-core disposed')); await cleanup() }, 'evidence-core.runtime()')
   if (config.runnerEnabled) {
     applySciRunCodeTool(ctx, {
       store,

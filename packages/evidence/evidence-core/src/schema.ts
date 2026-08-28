@@ -4,8 +4,8 @@ import { z } from 'zod'
 import type { CallId } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
-import { ArtifactId, ArtifactVersionId, CompileAttemptId, ContextEntityId, EvidenceEdgeId, EvidenceGraphId, EvidenceNodeId, EvidenceRunId, InputBundleId, LocationObservationId, ObservationId, OutputFinalizationId, OutputManifestId, OutputPlanId, OutputReservationId, PreflightReportId, ReceiptAcceptanceId, ReceiptSubmissionId, RecoveryId, SourceAnchorId, StagingId, TestedEnvironmentRevisionId } from './identity.ts'
-import type { ArtifactRecordV1, ArtifactVersionCoreV1, CompileAttemptId as CompileAttemptIdType, ContextEntityRecordV1, CurrentHeadV1, EnvironmentStateV1, EvidenceEdgeV1, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeV1, EvidenceRunReceiptSubmissionV1, EvidenceSnapshotPayloadV1, InputBundleV1, LocationAvailabilityObservationV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ReceiptAcceptanceRecordV1, ReceiptLaneV1, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorRecordV1, StagingId as StagingIdType, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
+import { ArtifactId, ArtifactVersionId, CandidateStatementId, CompileAttemptId, ContextEntityId, EvidenceEdgeId, EvidenceGraphId, EvidenceNodeId, EvidenceRunId, InputBundleId, LocationObservationId, ModelCallId, ObservationId, OutputFinalizationId, OutputManifestId, OutputPlanId, OutputReservationId, PreflightReportId, ReceiptAcceptanceId, ReceiptSubmissionId, RecoveryId, SourceAnchorId, StagingId, TestedEnvironmentRevisionId } from './identity.ts'
+import type { ArtifactRecordV1, ArtifactVersionCoreV1, CandidateRecordV1, CandidateRelationRecordV1, CompileAttemptId as CompileAttemptIdType, ContextEntityRecordV1, CurrentHeadV1, EnvironmentStateV1, EvidenceEdgeV1, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeV1, EvidenceRunReceiptSubmissionV1, EvidenceSnapshotPayloadV1, InputBundleV1, LocationAvailabilityObservationV1, ModelCallRecordV1, ModelRunSelectionRecordV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ProposalValidationRecordV1, ReceiptAcceptanceRecordV1, ReceiptLaneV1, RecoveryId as RecoveryIdType, SemanticLaneV1, SemanticSwitchV1, Sha256Digest, SourceAnchorRecordV1, StagingId as StagingIdType, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
 
 const safeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 /** Strict tagged SHA-256 digest schema. */
@@ -32,6 +32,8 @@ export const outputReservationIdSchema = z.string().transform(OutputReservationI
 export const outputPlanIdSchema = z.string().transform(OutputPlanId)
 export const outputManifestIdSchema = z.string().transform(OutputManifestId)
 export const outputFinalizationIdSchema = z.string().transform(OutputFinalizationId)
+export const candidateStatementIdSchema = z.string().transform(CandidateStatementId)
+export const modelCallIdSchema = z.string().transform(ModelCallId)
 const sessionIdSchema = z.string().min(1).transform(value => value as SessionId)
 const callIdSchema = z.string().min(1).transform(value => value as CallId)
 const workspaceIdSchema = z.string().min(1).transform(value => value as WorkspaceId)
@@ -152,7 +154,10 @@ export const eventBackedRunPayloadSchema = z.object({
   captureContractRevision: z.literal('animalge-capture/v1'),
   eventSeqRange: z.object({ startInclusive: safeInteger, endInclusive: safeInteger }).strict(),
   actorRefs: z.tuple([]),
-  selectionBasis: z.object({ kind: z.literal('deterministic_rule'), ruleRevision: z.string().min(1), ruleDigest: sha256DigestSchema }).strict(),
+  selectionBasis: z.union([
+    z.object({ kind: z.literal('deterministic_rule'), ruleRevision: z.string().min(1), ruleDigest: sha256DigestSchema }).strict(),
+    z.object({ kind: z.literal('model_candidate'), modelCallId: modelCallIdSchema, attemptId: compileAttemptIdSchema, modelRequestEventRef: sessionEventRefSchema }).strict(),
+  ]),
   startedAt: safeInteger.nullable(),
   endedAt: safeInteger,
   outcome: outcomeSchema,
@@ -211,6 +216,45 @@ export const contextEntityNodePayloadSchema = z.object({
   payload: z.json(),
 }).strict()
 
+/** Source binding of one candidate to its Agent-message span (SPEC-04 §8.3). */
+export const agentMessageSourceBindingSchema = z.object({
+  kind: z.literal('agent_message'),
+  sessionId: sessionIdSchema,
+  eventSeq: safeInteger,
+  spanStart: safeInteger,
+  spanEnd: safeInteger,
+  spanTextDigest: sha256DigestSchema,
+  actorRef: z.string().min(1),
+}).strict()
+
+/** Model generation provenance shared by candidate nodes and relation edges (SPEC-04 §8.3). */
+export const candidateGenerationProvenanceSchema = z.object({
+  modelCallId: modelCallIdSchema,
+  modelRequestEventRef: sessionEventRefSchema,
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  extractorRevision: z.string().min(1),
+  promptRevision: z.string().min(1),
+  projectionDigest: sha256DigestSchema,
+  attemptId: compileAttemptIdSchema,
+}).strict()
+
+/** Strict CandidateStatement node payload schema (SPEC-04 §8.3). */
+export const candidateStatementNodePayloadSchema = z.object({
+  candidateSchema: z.literal('animalge.candidate.statement/v1'),
+  candidateId: candidateStatementIdSchema,
+  subtype: z.enum(['hypothesis', 'interpretation', 'conclusion', 'limitation', 'statement']),
+  text: z.string().min(1),
+  sourceBinding: agentMessageSourceBindingSchema,
+  generationProvenance: candidateGenerationProvenanceSchema,
+  relationSummary: z.object({
+    summary: z.enum(['no_active_evidence', 'support_only', 'contradiction_only', 'mixed']),
+    activeSupports: safeInteger,
+    activeContradicts: safeInteger,
+    activeQualifies: safeInteger,
+  }).strict(),
+}).strict()
+
 /** Strict Evidence Node schema, discriminated on payloadSchema (unique per kind and per Run capture basis). */
 export const evidenceNodeSchema = z.discriminatedUnion('payloadSchema', [
   z.object({ ...nodeBase, nodeKind: z.literal('Run'), payloadSchema: z.literal('animalge.run.event-backed/v1'), payload: eventBackedRunPayloadSchema }).strict(),
@@ -218,10 +262,11 @@ export const evidenceNodeSchema = z.discriminatedUnion('payloadSchema', [
   z.object({ ...nodeBase, nodeKind: z.literal('Observation'), payloadSchema: z.literal('animalge.observation.tool-result/v1'), payload: toolResultObservationPayloadSchema }).strict(),
   z.object({ ...nodeBase, nodeKind: z.literal('ArtifactVersion'), payloadSchema: z.literal('animalge.artifact.version-node/v1'), payload: artifactVersionNodePayloadSchema }).strict(),
   z.object({ ...nodeBase, nodeKind: z.literal('ContextEntity'), payloadSchema: z.literal('animalge.context.entity-node/v1'), payload: contextEntityNodePayloadSchema }).strict(),
+  z.object({ ...nodeBase, nodeKind: z.literal('CandidateStatement'), payloadSchema: z.literal('animalge.candidate.statement/v1'), payload: candidateStatementNodePayloadSchema }).strict(),
 ]) as unknown as z.ZodType<EvidenceNodeV1>
 
-/** Strict deterministic provenance Edge schema (SPEC-02 extends the closed edge-type union). */
-export const evidenceEdgeSchema = z.object({
+/** Deterministic-family edge base: provenance edges never carry model provenance (SPEC-04 §10.2-3). */
+const deterministicEdgeBase = {
   schemaVersion: z.literal('animalge.evidence.edge/v1'),
   edgeId: evidenceEdgeIdSchema,
   graphId: evidenceGraphIdSchema,
@@ -232,7 +277,28 @@ export const evidenceEdgeSchema = z.object({
   projectionState: z.enum(['active', 'diagnostic', 'excluded']),
   sourceEventRefs: z.array(sessionEventRefSchema),
   compiler: compilerProvenanceSchema,
-}).strict() as unknown as z.ZodType<EvidenceEdgeV1>
+}
+
+/** Candidate-family edges always carry model generation provenance (SPEC-04 §10.2-3). */
+const candidateEdgeSchema = z.object({
+  schemaVersion: z.literal('animalge.evidence.edge/v1'),
+  edgeId: evidenceEdgeIdSchema,
+  graphId: evidenceGraphIdSchema,
+  edgeType: z.enum(['supports', 'qualifies', 'contradicts', 'same_as_candidate']),
+  family: z.enum(['scientific_argument', 'conflict_candidate_identity']),
+  from: evidenceNodeIdSchema,
+  to: evidenceNodeIdSchema,
+  projectionState: z.enum(['active', 'diagnostic', 'excluded']),
+  sourceEventRefs: z.array(sessionEventRefSchema),
+  compiler: compilerProvenanceSchema,
+  relation: candidateGenerationProvenanceSchema,
+}).strict()
+
+/** Strict Edge schema: closed union of the deterministic and candidate families. */
+export const evidenceEdgeSchema = z.union([
+  z.object(deterministicEdgeBase).strict(),
+  candidateEdgeSchema,
+]) as unknown as z.ZodType<EvidenceEdgeV1>
 
 const breakpointSchema = z.object({
   schemaVersion: z.literal('animalge.snapshot-breakpoint/v1'),
@@ -259,12 +325,34 @@ export const snapshotRevisionsSchema = z.union([
     selectionRuleDigest: sha256DigestSchema,
     materialContract: z.literal('animalge-material/v1'),
   }).strict(),
+  z.object({
+    canonicalization: z.literal('animalge-c14n-json/v1'),
+    identity: z.literal('animalge-identity/v1'),
+    compiler: z.string().min(1),
+    captureContract: z.literal('animalge-capture/v1'),
+    selectionRuleDigest: sha256DigestSchema,
+    materialContract: z.literal('animalge-material/v1'),
+    candidateContract: z.literal('animalge-candidate/v1'),
+  }).strict(),
 ])
 
-/** Snapshot schema set: core-only legacy (SPEC-01) plus the material pair (SPEC-02 §4.7-3/7). */
+/** Snapshot schema set: core-only legacy (SPEC-01), the material pair (SPEC-02), the candidate triple (SPEC-04 §10.2-3). */
 export const evidenceSchemaSetSchema = z.union([
   z.tuple([z.literal('animalge.evidence.core/v1')]),
   z.tuple([z.literal('animalge.evidence.core/v1'), z.literal('animalge.evidence.material/v1')]),
+  z.tuple([z.literal('animalge.evidence.core/v1'), z.literal('animalge.evidence.material/v1'), z.literal('animalge.evidence.candidate/v1')]),
+])
+
+/**
+ * Semantic watermark: the tri-state tagged union plus the untagged SPEC-01/02 legacy form
+ * (SPEC-04 §9.6/§10.2-4). Integrity enforces: legacy form only on non-candidate schemaSets
+ * and only at zero; candidate schemaSets require a tagged form.
+ */
+export const semanticWatermarkSchema = z.union([
+  z.object({ kind: z.literal('active'), nextSeqExclusive: safeInteger }).strict(),
+  z.object({ kind: z.literal('disabled'), lastNextSeqExclusive: safeInteger }).strict(),
+  z.object({ kind: z.literal('not_configured') }).strict(),
+  z.object({ nextSeqExclusive: safeInteger }).strict(),
 ])
 
 /** Strict immutable Evidence Snapshot payload schema. */
@@ -275,7 +363,7 @@ export const evidenceSnapshotPayloadSchema = z.object({
   revisions: snapshotRevisionsSchema,
   baseSnapshotDigest: sha256DigestSchema.nullable(),
   deterministicWatermark: z.object({ nextSeqExclusive: safeInteger }).strict(),
-  semanticWatermark: z.object({ nextSeqExclusive: safeInteger }).strict(),
+  semanticWatermark: semanticWatermarkSchema,
   sourceTimeUpperBound: safeInteger.nullable(),
   nodes: z.array(evidenceNodeSchema),
   edges: z.array(evidenceEdgeSchema),
@@ -350,6 +438,7 @@ export const compileOutboxSchema = z.object({
     startup_scan: safeInteger,
     retry: safeInteger,
     receipt_accepted: safeInteger.optional(),
+    semantic_ready: safeInteger.optional(),
   }).strict(),
   fairTicket: safeInteger.min(1),
   firstQueuedAt: safeInteger,
@@ -385,6 +474,17 @@ export const compileAttemptSchema = z.object({
   }).strict().nullable(),
   stagingId: stagingIdSchema.nullable(),
   resultSnapshotDigest: sha256DigestSchema.nullable(),
+  /** SPEC-04 §10.2-5 additive diff: compile channel; absent means 'deterministic' (legacy rows unchanged). */
+  channel: z.enum(['deterministic', 'semantic']).optional(),
+  /** Semantic-attempt provenance block (SPEC-04 §9.2); present only on channel='semantic' attempts. */
+  semantic: z.object({
+    modelCallId: modelCallIdSchema.nullable(),
+    modelRequestEventRef: sessionEventRefSchema.nullable(),
+    projectionDigest: sha256DigestSchema.nullable(),
+    extractorRevision: z.string().min(1),
+    promptRevision: z.string().min(1),
+    outputDigest: sha256DigestSchema.nullable(),
+  }).strict().optional(),
 }).strict()
 
 export const stagingRecordSchema = z.object({
@@ -705,6 +805,87 @@ export const outputFinalizationSchema = z.object({
   finalizationDigest: sha256DigestSchema,
 }).strict() as unknown as z.ZodType<OutputFinalizationRecordV1>
 
+/** --- SPEC-04 candidate-semantics owner records --- */
+
+export const semanticLaneSchema = z.object({
+  recordVersion: z.literal('animalge.semantic-lane/v1'),
+  graphId: evidenceGraphIdSchema,
+  nextSeqExclusive: safeInteger,
+  updatedAt: safeInteger,
+}).strict() as unknown as z.ZodType<SemanticLaneV1>
+
+export const semanticSwitchSchema = z.object({
+  recordVersion: z.literal('animalge.semantic-switch/v1'),
+  graphId: evidenceGraphIdSchema,
+  enabled: z.boolean(),
+  updatedAt: safeInteger,
+}).strict() as unknown as z.ZodType<SemanticSwitchV1>
+
+export const modelCallSchema = z.object({
+  recordVersion: z.literal('animalge.model-call/v1'),
+  modelCallId: modelCallIdSchema,
+  graphId: evidenceGraphIdSchema,
+  attemptId: compileAttemptIdSchema,
+  purpose: z.literal('candidate-semantics'),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  generationConfig: z.json(),
+  requestEventRef: sessionEventRefSchema.nullable(),
+  startedAt: safeInteger,
+  endedAt: safeInteger,
+  outcome: z.enum(['succeeded', 'aborted', 'timed_out', 'failed']),
+  errorDigest: z.string().min(1).nullable(),
+  usage: z.json().nullable(),
+  acceptedOutputDigest: sha256DigestSchema.nullable(),
+}).strict() as unknown as z.ZodType<ModelCallRecordV1>
+
+export const candidateRecordSchema = z.object({
+  recordVersion: z.literal('animalge.candidate/v1'),
+  candidateId: candidateStatementIdSchema,
+  graphId: evidenceGraphIdSchema,
+  subtype: z.enum(['hypothesis', 'interpretation', 'conclusion', 'limitation', 'statement']),
+  text: z.string().min(1),
+  sourceBinding: agentMessageSourceBindingSchema,
+  sourceEventRef: sessionEventRefSchema,
+  generationProvenance: candidateGenerationProvenanceSchema,
+  acceptedAt: safeInteger,
+  acceptedAttemptId: compileAttemptIdSchema,
+}).strict() as unknown as z.ZodType<CandidateRecordV1>
+
+export const candidateRelationRecordSchema = z.object({
+  recordVersion: z.literal('animalge.candidate-relation/v1'),
+  edgeId: evidenceEdgeIdSchema,
+  graphId: evidenceGraphIdSchema,
+  edgeType: z.enum(['supports', 'qualifies', 'contradicts', 'same_as_candidate']),
+  fromNodeId: evidenceNodeIdSchema,
+  toNodeId: evidenceNodeIdSchema,
+  provenance: candidateGenerationProvenanceSchema,
+  createdAt: safeInteger,
+  acceptedAttemptId: compileAttemptIdSchema,
+}).strict() as unknown as z.ZodType<CandidateRelationRecordV1>
+
+export const modelRunSelectionSchema = z.object({
+  recordVersion: z.literal('animalge.model-run-selection/v1'),
+  runId: evidenceRunIdSchema,
+  graphId: evidenceGraphIdSchema,
+  modelCallId: modelCallIdSchema,
+  attemptId: compileAttemptIdSchema,
+  modelRequestEventRef: sessionEventRefSchema,
+  reason: z.string(),
+  createdAt: safeInteger,
+}).strict() as unknown as z.ZodType<ModelRunSelectionRecordV1>
+
+export const proposalValidationSchema = z.object({
+  recordVersion: z.literal('animalge.proposal-validation/v1'),
+  fingerprint: z.string().min(1),
+  graphId: evidenceGraphIdSchema,
+  attemptId: compileAttemptIdSchema,
+  verdict: z.enum(['accepted', 'rejected']),
+  rejectCode: z.string().min(1).nullable(),
+  summary: z.json(),
+  recordedAt: safeInteger,
+}).strict() as unknown as z.ZodType<ProposalValidationRecordV1>
+
 export interface SessionGraphBootstrap {
   readonly recordVersion: 'animalge.session-graph-bootstrap/v1'
   readonly sessionId: SessionId
@@ -736,5 +917,12 @@ export type ReceiptAcceptanceRecord = z.infer<typeof receiptAcceptanceSchema>
 export type ReceiptLaneRecord = z.infer<typeof receiptLaneSchema>
 export type PreflightReportRecord = z.infer<typeof preflightReportSchema>
 export type EnvironmentStateRecord = z.infer<typeof environmentStateSchema>
+export type SemanticLaneRecord = z.infer<typeof semanticLaneSchema>
+export type SemanticSwitchRecord = z.infer<typeof semanticSwitchSchema>
+export type ModelCallRecord = z.infer<typeof modelCallSchema>
+export type CandidateRecord = z.infer<typeof candidateRecordSchema>
+export type CandidateRelationRecord = z.infer<typeof candidateRelationRecordSchema>
+export type ModelRunSelectionRecord = z.infer<typeof modelRunSelectionSchema>
+export type ProposalValidationRecord = z.infer<typeof proposalValidationSchema>
 
 export type ControlIds = EvidenceGraphIdType | CompileAttemptIdType | StagingIdType | RecoveryIdType

@@ -89,7 +89,7 @@ export interface EventBackedRunPayloadV1 {
   readonly captureContractRevision: 'animalge-capture/v1'
   readonly eventSeqRange: { readonly startInclusive: number; readonly endInclusive: number }
   readonly actorRefs: readonly []
-  readonly selectionBasis: { readonly kind: 'deterministic_rule'; readonly ruleRevision: string; readonly ruleDigest: Sha256Digest }
+  readonly selectionBasis: { readonly kind: 'deterministic_rule'; readonly ruleRevision: string; readonly ruleDigest: Sha256Digest } | ModelCandidateSelectionV1
   readonly startedAt: number | null
   readonly endedAt: number
   readonly outcome: RunOutcome
@@ -121,7 +121,7 @@ export interface EvidenceNodeBaseV1 {
   readonly schemaVersion: 'animalge.evidence.node/v1'
   readonly nodeId: EvidenceNodeId
   readonly graphId: EvidenceGraphId
-  readonly nodeKind: 'Run' | 'Observation' | 'ArtifactVersion' | 'ContextEntity'
+  readonly nodeKind: 'Run' | 'Observation' | 'ArtifactVersion' | 'ContextEntity' | 'CandidateStatement'
   readonly payloadSchema: string
   readonly projectionState: 'active' | 'diagnostic' | 'excluded'
   readonly identityRevision: 'animalge-identity/v1'
@@ -129,26 +129,47 @@ export interface EvidenceNodeBaseV1 {
   readonly compiler: DeterministicCompilerProvenanceV1
 }
 
-/** Frozen Run or Observation Node union plus the SPEC-02 material node kinds. */
+/** Frozen Run or Observation Node union plus the SPEC-02 material and SPEC-04 candidate node kinds. */
 export type EvidenceNodeV1 =
   | EvidenceNodeBaseV1 & { readonly nodeKind: 'Run'; readonly payloadSchema: 'animalge.run.event-backed/v1' | 'animalge.run.receipt-backed/v1'; readonly payload: EventBackedRunPayloadV1 | ReceiptBackedRunPayloadV1 }
   | EvidenceNodeBaseV1 & { readonly nodeKind: 'Observation'; readonly payloadSchema: 'animalge.observation.tool-result/v1'; readonly payload: ToolResultObservationPayloadV1 }
   | EvidenceNodeBaseV1 & { readonly nodeKind: 'ArtifactVersion'; readonly payloadSchema: 'animalge.artifact.version-node/v1'; readonly payload: ArtifactVersionNodePayloadV1 }
   | EvidenceNodeBaseV1 & { readonly nodeKind: 'ContextEntity'; readonly payloadSchema: 'animalge.context.entity-node/v1'; readonly payload: ContextEntityNodePayloadV1 }
+  | EvidenceNodeBaseV1 & { readonly nodeKind: 'CandidateStatement'; readonly payloadSchema: 'animalge.candidate.statement/v1'; readonly payload: CandidateStatementPayloadV1 }
 
-/** Frozen deterministic provenance Edge schema (SPEC-02 extends the edge-type union). */
-export interface EvidenceEdgeV1 {
-  readonly schemaVersion: 'animalge.evidence.edge/v1'
-  readonly edgeId: EvidenceEdgeId
-  readonly graphId: EvidenceGraphId
-  readonly edgeType: 'generated_by' | 'part_of' | 'used' | 'supersedes' | 'restored_from'
-  readonly family: 'deterministic_provenance'
-  readonly from: EvidenceNodeId
-  readonly to: EvidenceNodeId
-  readonly projectionState: 'active' | 'diagnostic' | 'excluded'
-  readonly sourceEventRefs: readonly SessionEventRefV1[]
-  readonly compiler: DeterministicCompilerProvenanceV1
-}
+/** Edge families: deterministic provenance plus the SPEC-04 candidate families (§10.2-3). */
+export type EvidenceEdgeFamilyV1 = 'deterministic_provenance' | 'scientific_argument' | 'conflict_candidate_identity'
+
+/**
+ * Frozen provenance Edge schema. Deterministic-family edges never carry a relation
+ * payload; candidate-family edges always carry model generation provenance (§10.2-3).
+ */
+export type EvidenceEdgeV1 =
+  | {
+    readonly schemaVersion: 'animalge.evidence.edge/v1'
+    readonly edgeId: EvidenceEdgeId
+    readonly graphId: EvidenceGraphId
+    readonly edgeType: 'generated_by' | 'part_of' | 'used' | 'supersedes' | 'restored_from'
+    readonly family: 'deterministic_provenance'
+    readonly from: EvidenceNodeId
+    readonly to: EvidenceNodeId
+    readonly projectionState: 'active' | 'diagnostic' | 'excluded'
+    readonly sourceEventRefs: readonly SessionEventRefV1[]
+    readonly compiler: DeterministicCompilerProvenanceV1
+  }
+  | {
+    readonly schemaVersion: 'animalge.evidence.edge/v1'
+    readonly edgeId: EvidenceEdgeId
+    readonly graphId: EvidenceGraphId
+    readonly edgeType: 'supports' | 'qualifies' | 'contradicts' | 'same_as_candidate'
+    readonly family: 'scientific_argument' | 'conflict_candidate_identity'
+    readonly from: EvidenceNodeId
+    readonly to: EvidenceNodeId
+    readonly projectionState: 'active' | 'diagnostic' | 'excluded'
+    readonly sourceEventRefs: readonly SessionEventRefV1[]
+    readonly compiler: DeterministicCompilerProvenanceV1
+    readonly relation: CandidateGenerationProvenanceV1
+  }
 
 /** Stable diagnostic describing a conservative projection discontinuity. */
 export interface SnapshotBreakpointV1 {
@@ -160,10 +181,11 @@ export interface SnapshotBreakpointV1 {
   readonly detailDigest: Sha256Digest
 }
 
-/** Snapshot schema set: SPEC-01 core-only legacy plus the SPEC-02 material extension. */
+/** Snapshot schema set: core-only legacy, the SPEC-02 material pair, and the SPEC-04 candidate triple. */
 export type EvidenceSchemaSetV1 =
   | readonly ['animalge.evidence.core/v1']
   | readonly ['animalge.evidence.core/v1', 'animalge.evidence.material/v1']
+  | readonly ['animalge.evidence.core/v1', 'animalge.evidence.material/v1', 'animalge.evidence.candidate/v1']
 
 /** Complete immutable deterministic Evidence projection for one watermark. */
 export interface EvidenceSnapshotPayloadV1 {
@@ -178,10 +200,12 @@ export interface EvidenceSnapshotPayloadV1 {
     readonly selectionRuleDigest: Sha256Digest
     /** Present only on material snapshots (SPEC-02 §4.7-3); absent on core-only legacy. */
     readonly materialContract?: 'animalge-material/v1'
+    /** Present only on candidate snapshots (SPEC-04 §10.2-3); absent on legacy schemaSets. */
+    readonly candidateContract?: 'animalge-candidate/v1'
   }
   readonly baseSnapshotDigest: Sha256Digest | null
   readonly deterministicWatermark: { readonly nextSeqExclusive: number }
-  readonly semanticWatermark: { readonly nextSeqExclusive: number }
+  readonly semanticWatermark: SemanticWatermarkV1
   readonly sourceTimeUpperBound: number | null
   readonly nodes: readonly EvidenceNodeV1[]
   readonly edges: readonly EvidenceEdgeV1[]
@@ -599,4 +623,160 @@ export interface ProfessionalToolResultV1 {
   readonly outputs: readonly { readonly role: string; readonly artifactVersionRef: string }[]
   readonly receiptSubmissionRef: string
   readonly error?: { readonly code: string; readonly message: string }
+}
+
+/** --- SPEC-04 candidate-semantics layer identities and objects --- */
+
+/** Stable identity of one CandidateStatement (SPEC-04 §8.2; prefix cst_). */
+export type CandidateStatementId = Branded<'CandidateStatementId'>
+/** Unique identity of one evidence model call (SPEC-04 §6.3; prefix mc_). */
+export type ModelCallId = Branded<'ModelCallId'>
+
+/**
+ * Tri-state semantic watermark (SPEC-04 §9.6/§10.2-4). The untagged legacy form is only
+ * legal on non-candidate schemaSets where it must equal zero; readers interpret it as
+ * `not_configured` without rewriting stored bytes.
+ */
+export type SemanticWatermarkV1 =
+  | { readonly kind: 'active'; readonly nextSeqExclusive: number }
+  | { readonly kind: 'disabled'; readonly lastNextSeqExclusive: number }
+  | { readonly kind: 'not_configured' }
+  | { readonly nextSeqExclusive: number }
+
+/** Verifiable binding of one candidate to its direct Agent-message source (SPEC-04 §8.3). */
+export interface AgentMessageSourceBindingV1 {
+  readonly kind: 'agent_message'
+  readonly sessionId: SessionId
+  readonly eventSeq: number
+  readonly spanStart: number
+  readonly spanEnd: number
+  readonly spanTextDigest: Sha256Digest
+  readonly actorRef: string
+}
+
+/** Generation provenance shared by candidate nodes and candidate relation edges (SPEC-04 §8.3). */
+export interface CandidateGenerationProvenanceV1 {
+  readonly modelCallId: ModelCallId
+  readonly modelRequestEventRef: SessionEventRefV1
+  readonly provider: string
+  readonly model: string
+  readonly extractorRevision: string
+  readonly promptRevision: string
+  readonly projectionDigest: Sha256Digest
+  readonly attemptId: CompileAttemptId
+}
+
+/** Deterministic relation summary derived from active candidate edges (SPEC-04 §8.3, D-092). */
+export interface CandidateRelationSummaryV1 {
+  readonly summary: 'no_active_evidence' | 'support_only' | 'contradiction_only' | 'mixed'
+  readonly activeSupports: number
+  readonly activeContradicts: number
+  readonly activeQualifies: number
+}
+
+/** Graph-projection payload of one CandidateStatement node (SPEC-04 §8.3). */
+export interface CandidateStatementPayloadV1 {
+  readonly candidateSchema: 'animalge.candidate.statement/v1'
+  readonly candidateId: CandidateStatementId
+  readonly subtype: 'hypothesis' | 'interpretation' | 'conclusion' | 'limitation' | 'statement'
+  readonly text: string
+  readonly sourceBinding: AgentMessageSourceBindingV1
+  readonly generationProvenance: CandidateGenerationProvenanceV1
+  readonly relationSummary: CandidateRelationSummaryV1
+}
+
+/** Model-proposed selection basis for event-backed Runs (SPEC-04 §8.4; SPEC-02 §8.2 reservation). */
+export interface ModelCandidateSelectionV1 {
+  readonly kind: 'model_candidate'
+  readonly modelCallId: ModelCallId
+  readonly attemptId: CompileAttemptId
+  readonly modelRequestEventRef: SessionEventRefV1
+}
+
+/** Immutable candidate owner record (SPEC-04 §8.2 ledger; append-only). */
+export interface CandidateRecordV1 {
+  readonly recordVersion: 'animalge.candidate/v1'
+  readonly candidateId: CandidateStatementId
+  readonly graphId: EvidenceGraphId
+  readonly subtype: CandidateStatementPayloadV1['subtype']
+  readonly text: string
+  readonly sourceBinding: AgentMessageSourceBindingV1
+  /** Verified assistant/message event reference from the attempt's frozen prefix. */
+  readonly sourceEventRef: SessionEventRefV1
+  readonly generationProvenance: CandidateGenerationProvenanceV1
+  readonly acceptedAt: number
+  readonly acceptedAttemptId: CompileAttemptId
+}
+
+/** Immutable candidate-relation owner record (SPEC-04 §8.2 ledger; append-only). */
+export interface CandidateRelationRecordV1 {
+  readonly recordVersion: 'animalge.candidate-relation/v1'
+  readonly edgeId: EvidenceEdgeId
+  readonly graphId: EvidenceGraphId
+  readonly edgeType: 'supports' | 'qualifies' | 'contradicts' | 'same_as_candidate'
+  readonly fromNodeId: EvidenceNodeId
+  readonly toNodeId: EvidenceNodeId
+  readonly provenance: CandidateGenerationProvenanceV1
+  readonly createdAt: number
+  readonly acceptedAttemptId: CompileAttemptId
+}
+
+/** Immutable model-proposed run selection owner record (SPEC-04 §8.2; first write per runId wins). */
+export interface ModelRunSelectionRecordV1 {
+  readonly recordVersion: 'animalge.model-run-selection/v1'
+  readonly runId: EvidenceRunId
+  readonly graphId: EvidenceGraphId
+  readonly modelCallId: ModelCallId
+  readonly attemptId: CompileAttemptId
+  readonly modelRequestEventRef: SessionEventRefV1
+  readonly reason: string
+  readonly createdAt: number
+}
+
+/** Result-side provenance of one evidence model call (SPEC-04 §6.3; request bytes live in the Session log). */
+export interface ModelCallRecordV1 {
+  readonly recordVersion: 'animalge.model-call/v1'
+  readonly modelCallId: ModelCallId
+  readonly graphId: EvidenceGraphId
+  readonly attemptId: CompileAttemptId
+  readonly purpose: 'candidate-semantics'
+  readonly provider: string
+  readonly model: string
+  readonly generationConfig: JsonValue
+  readonly requestEventRef: SessionEventRefV1 | null
+  readonly startedAt: number
+  readonly endedAt: number
+  readonly outcome: 'succeeded' | 'aborted' | 'timed_out' | 'failed'
+  /** Short fnv1a error identity — full messages never enter durable records (§6.3). */
+  readonly errorDigest: string | null
+  readonly usage: JsonValue | null
+  readonly acceptedOutputDigest: Sha256Digest | null
+}
+
+/** Per-Graph semantic lane watermark — the crash-recovery authority (SPEC-04 §9.2). */
+export interface SemanticLaneV1 {
+  readonly recordVersion: 'animalge.semantic-lane/v1'
+  readonly graphId: EvidenceGraphId
+  readonly nextSeqExclusive: number
+  readonly updatedAt: number
+}
+
+/** Per-Graph session-level "AI candidate extraction" switch state (SPEC-04 §4.3, D-155). */
+export interface SemanticSwitchV1 {
+  readonly recordVersion: 'animalge.semantic-switch/v1'
+  readonly graphId: EvidenceGraphId
+  readonly enabled: boolean
+  readonly updatedAt: number
+}
+
+/** Immutable per-proposal validation verdict, accepted or rejected with a named code (SPEC-04 §8.1). */
+export interface ProposalValidationRecordV1 {
+  readonly recordVersion: 'animalge.proposal-validation/v1'
+  readonly fingerprint: string
+  readonly graphId: EvidenceGraphId
+  readonly attemptId: CompileAttemptId
+  readonly verdict: 'accepted' | 'rejected'
+  readonly rejectCode: string | null
+  readonly summary: JsonValue
+  readonly recordedAt: number
 }

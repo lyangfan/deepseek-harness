@@ -3,9 +3,10 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import { canonicalJson } from './canonical-json.ts'
-import type { ArtifactId as ArtifactIdType, ArtifactVersionId as ArtifactVersionIdType, CompileAttemptId as CompileAttemptIdType, ContextEntityId as ContextEntityIdType, EvidenceEdgeId as EvidenceEdgeIdType, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeId as EvidenceNodeIdType, EvidenceRunId as EvidenceRunIdType, InputBundleId as InputBundleIdType, LocationObservationId as LocationObservationIdType, ObservationId as ObservationIdType, OutputFinalizationId as OutputFinalizationIdType, OutputManifestId as OutputManifestIdType, OutputPlanId as OutputPlanIdType, OutputReservationId as OutputReservationIdType, PreflightReportId as PreflightReportIdType, ReceiptAcceptanceId as ReceiptAcceptanceIdType, ReceiptSubmissionId as ReceiptSubmissionIdType, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorId as SourceAnchorIdType, StagingId as StagingIdType, TestedEnvironmentRevisionId as TestedEnvironmentRevisionIdType } from './types.ts'
+import type { ArtifactId as ArtifactIdType, ArtifactVersionId as ArtifactVersionIdType, CandidateStatementId as CandidateStatementIdType, CompileAttemptId as CompileAttemptIdType, ContextEntityId as ContextEntityIdType, EvidenceEdgeId as EvidenceEdgeIdType, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeId as EvidenceNodeIdType, EvidenceRunId as EvidenceRunIdType, InputBundleId as InputBundleIdType, LocationObservationId as LocationObservationIdType, ModelCallId as ModelCallIdType, ObservationId as ObservationIdType, OutputFinalizationId as OutputFinalizationIdType, OutputManifestId as OutputManifestIdType, OutputPlanId as OutputPlanIdType, OutputReservationId as OutputReservationIdType, PreflightReportId as PreflightReportIdType, ReceiptAcceptanceId as ReceiptAcceptanceIdType, ReceiptSubmissionId as ReceiptSubmissionIdType, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorId as SourceAnchorIdType, StagingId as StagingIdType, TestedEnvironmentRevisionId as TestedEnvironmentRevisionIdType } from './types.ts'
 
-const ID_RE = /^(?:eg_|en_|ee_|er_|eo_|ca_|st_|rc_|art_|av_|lo_|ce_|sa_|rs_|ra_|ibd_|pfr_|ter_|obr_|opl_|omf_|ofr_)[A-Za-z0-9_-]+$/u
+const ID_PREFIXES = 'eg_|en_|ee_|er_|eo_|ca_|st_|rc_|art_|av_|lo_|ce_|sa_|rs_|ra_|ibd_|pfr_|ter_|obr_|opl_|omf_|ofr_|cst_|mc_'
+const ID_RE = new RegExp(`^(?:${ID_PREFIXES})[A-Za-z0-9_-]+$`, 'u')
 
 function checked(value: string, prefix: string): string {
   if (!value.startsWith(prefix) || !ID_RE.test(value)) throw new TypeError(`invalid Evidence identity '${value}'`)
@@ -74,6 +75,8 @@ export const OutputReservationId = (value: string): OutputReservationIdType => c
 export const OutputPlanId = (value: string): OutputPlanIdType => checked(value, 'opl_') as OutputPlanIdType
 export const OutputManifestId = (value: string): OutputManifestIdType => checked(value, 'omf_') as OutputManifestIdType
 export const OutputFinalizationId = (value: string): OutputFinalizationIdType => checked(value, 'ofr_') as OutputFinalizationIdType
+export const CandidateStatementId = (value: string): CandidateStatementIdType => checked(value, 'cst_') as CandidateStatementIdType
+export const ModelCallId = (value: string): ModelCallIdType => checked(value, 'mc_') as ModelCallIdType
 
 export const newEvidenceGraphId = (): EvidenceGraphIdType => EvidenceGraphId(`eg_${randomUUID()}`)
 export const newCompileAttemptId = (): CompileAttemptIdType => CompileAttemptId(`ca_${randomUUID()}`)
@@ -93,6 +96,7 @@ export const newOutputReservationId = (): OutputReservationIdType => OutputReser
 export const newOutputPlanId = (): OutputPlanIdType => OutputPlanId(`opl_${randomUUID()}`)
 export const newOutputManifestId = (): OutputManifestIdType => OutputManifestId(`omf_${randomUUID()}`)
 export const newOutputFinalizationId = (): OutputFinalizationIdType => OutputFinalizationId(`ofr_${randomUUID()}`)
+export const newModelCallId = (): ModelCallIdType => ModelCallId(`mc_${randomUUID()}`)
 
 /**
  * Derive a stable Run identity.
@@ -130,3 +134,15 @@ export const deriveArtifactNodeId = (material: { readonly graphId: EvidenceGraph
  * @returns Deterministic Node identity.
  */
 export const deriveContextNodeId = (material: { readonly graphId: EvidenceGraphIdType; readonly nodeKind: 'ContextEntity'; readonly contextEntityId: ContextEntityIdType }): EvidenceNodeIdType => EvidenceNodeId(tagged('en_', 'animalge:context-node-id:v1', material))
+/**
+ * Derive a stable CandidateStatement identity from source binding and generation position (SPEC-04 §8.2).
+ * @param material `{graphId, nodeKind:'CandidateStatement', sourceBindingKey, taskType, ordinalKey}`.
+ * @returns Deterministic CandidateStatement identity (cst_ prefix).
+ */
+export const deriveCandidateStatementId = (material: { readonly graphId: EvidenceGraphIdType; readonly nodeKind: 'CandidateStatement'; readonly sourceBindingKey: string; readonly taskType: string; readonly ordinalKey: string }): CandidateStatementIdType => CandidateStatementId(tagged('cst_', 'animalge:candidate-statement-id:v1', material))
+/**
+ * Derive a stable CandidateStatement Node identity (SPEC-04 §8.2).
+ * @param material `{graphId, nodeKind:'CandidateStatement', candidateId}`.
+ * @returns Deterministic Node identity.
+ */
+export const deriveCandidateNodeId = (material: { readonly graphId: EvidenceGraphIdType; readonly nodeKind: 'CandidateStatement'; readonly candidateId: CandidateStatementIdType }): EvidenceNodeIdType => EvidenceNodeId(tagged('en_', 'animalge:candidate-node-id:v1', material))
