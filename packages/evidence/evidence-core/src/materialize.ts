@@ -2,8 +2,11 @@
 
 import { deriveArtifactNodeId, deriveContextNodeId, deriveEdgeId } from './identity.ts'
 import type { CapturedInvocation, ContextEntityRecord, LocationObservation, ReceiptAcceptanceRecord, ReceiptSubmission } from './schema.ts'
-import type { ArtifactVersionCoreV1, ArtifactVersionId, ContextEntityId, DeterministicCompilerProvenanceV1, EvidenceEdgeV1, EvidenceGraphId, EvidenceNodeId, EvidenceNodeV1, EvidenceRunId, InvocationEventBasisV1, ReceiptBackedRunPayloadV1, ReceiptComponentsV1, SessionEventRefV1 } from './types.ts'
+import type { ArtifactVersionCoreV1, ArtifactVersionId, ContextEntityId, DeterministicCompilerProvenanceV1, EvidenceEdgeV1, EvidenceGraphId, EvidenceNodeId, EvidenceNodeV1, EvidenceRunId, InvocationEventBasisV1, OutputFinalizationRecordV1, OutputManifestV1, ReceiptBackedRunPayloadV1, ReceiptComponentsV1, SessionEventRefV1 } from './types.ts'
 import type { EvidenceStore } from './store.ts'
+
+/** Capture-profile family of the professional Runtime producer (SPEC-03 §9.1). */
+export const PROFESSIONAL_CAPTURE_PROFILE_PREFIX = 'sci-tool:'
 
 /** Frozen material-layer contract revision carried by every material Snapshot. */
 export const MATERIAL_CONTRACT_REVISION = 'animalge-material/v1'
@@ -14,6 +17,11 @@ export interface MaterialSnapshot {
   readonly versions: ReadonlyMap<ArtifactVersionId, ArtifactVersionCoreV1>
   readonly entities: ReadonlyMap<ContextEntityId, ContextEntityRecord>
   readonly observations: ReadonlyMap<ArtifactVersionId, LocationObservation>
+  /** Finalized formal outputs per runId (SPEC-03 §8.4 compiler materialization gate). */
+  readonly finalizations: ReadonlyMap<EvidenceRunId, {
+    readonly finalization: OutputFinalizationRecordV1
+    readonly manifest: OutputManifestV1
+  }>
 }
 
 /** Freeze the store material state visible to one Graph at attempt time (§8.1). */
@@ -42,7 +50,18 @@ export function materialSnapshotFor(store: EvidenceStore, _graphId: EvidenceGrap
   for (const [id, entity] of store.contextEntities.entries()) {
     if (referenced.has(id)) entities.set(entity.contextEntityId, entity)
   }
-  return { accepted, versions, entities, observations }
+  // SPEC-03 §8.4: the verified finalization marker is the only publication commit for
+  // professional outputs; a run without one stays receipt-backed without output lineage.
+  const finalizations = new Map<EvidenceRunId, { finalization: OutputFinalizationRecordV1; manifest: OutputManifestV1 }>()
+  for (const [, finalization] of store.outputFinalizations.entries()) {
+    const manifest = store.outputManifests.get(finalization.manifestId)
+    if (manifest === undefined || manifest.manifestDigest !== finalization.manifestDigest) continue
+    const current = finalizations.get(finalization.runId)
+    if (current === undefined || finalization.finalizedAt > current.finalization.finalizedAt) {
+      finalizations.set(finalization.runId, { finalization, manifest })
+    }
+  }
+  return { accepted, versions, entities, observations, finalizations }
 }
 
 /** §8.3 ComponentStateV1: strip the producer-side captureBasis (§6.3) from each component. */
@@ -77,7 +96,11 @@ export function receiptBackedPayload(options: {
     runSchema: 'animalge.run.receipt-backed/v1',
     runId: capture.runId,
     runKind: 'tool',
-    operation: { toolName: capture.toolName, languageProfile: submission.operation.languageProfile },
+    operation: {
+      toolName: capture.toolName,
+      ...(submission.operation.languageProfile === undefined ? {} : { languageProfile: submission.operation.languageProfile }),
+      ...(submission.operation.operationProfile === undefined ? {} : { operationProfile: submission.operation.operationProfile }),
+    },
     primaryCallId,
     invocationDigest: capture.invocationDigest,
     eventBasis: basis,
@@ -165,6 +188,12 @@ export function materialProjection(options: {
     })
   }
   const componentKeys = Object.keys(submission.components) as (keyof ReceiptComponentsV1)[]
+  // SPEC-03 §8.4 materialization gate: professional outputs only gain generated_by when a
+  // verified OutputFinalizationRecord publishes them; the runner keeps its frozen rule.
+  const professional = submission.captureProfileId.startsWith(PROFESSIONAL_CAPTURE_PROFILE_PREFIX)
+  const finalizedRefs = professional
+    ? new Set(material.finalizations.get(submission.runId)?.manifest.formalOutputs.map(output => output.artifactVersionId) ?? [])
+    : undefined
   for (const key of componentKeys) {
     const component = submission.components[key]
     if (component.state !== 'captured') continue
@@ -177,8 +206,12 @@ export function materialProjection(options: {
     for (const ref of component.ownerRefs) {
       const target = ref.startsWith('av_') ? artifactNode(ref as ArtifactVersionId) : entityNode(ref as ContextEntityId)
       if (target === undefined) continue
-      if (key === 'outputs') pushEdge('generated_by', target, runNodeId)
-      else pushEdge('used', runNodeId, target)
+      if (key === 'outputs') {
+        if (finalizedRefs !== undefined && !finalizedRefs.has(ref as ArtifactVersionId)) continue
+        pushEdge('generated_by', target, runNodeId)
+      } else {
+        pushEdge('used', runNodeId, target)
+      }
     }
   }
 

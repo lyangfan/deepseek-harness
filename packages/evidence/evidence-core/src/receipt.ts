@@ -18,6 +18,49 @@ export const RUNNER_PROVIDER_VERSION = 'spec02-runner/v1'
 
 export type ComponentKey = keyof ReceiptComponentsV1
 
+/**
+ * Versioned schema registration for one receipt extension namespace (SPEC-02 §6.5 frozen
+ * mechanism; SPEC-03 §9.2 registers the four first-party software namespaces). Extensions
+ * only add software-specific facts; they can never override public fields or flip a
+ * component from missing to captured.
+ */
+export interface ReceiptExtensionSchema {
+  readonly namespace: string
+  readonly schemaId: string
+  readonly revision: string
+  readonly validate: (payload: JsonValue) => boolean
+}
+
+const extensionSchemas = new Map<string, ReceiptExtensionSchema>()
+
+/** Register one namespace schema; re-registering identical identity is idempotent. */
+export function registerReceiptExtensionSchema(schema: ReceiptExtensionSchema): void {
+  const existing = extensionSchemas.get(schema.namespace)
+  if (existing !== undefined && (existing.schemaId !== schema.schemaId || existing.revision !== schema.revision)) {
+    throw new TypeError(`receipt extension namespace '${schema.namespace}' is already registered with a different schema identity`)
+  }
+  extensionSchemas.set(schema.namespace, schema)
+}
+
+export type ExtensionClassification =
+  | { readonly kind: 'registered'; readonly schema: ReceiptExtensionSchema }
+  | { readonly kind: 'unknown' }
+  | { readonly kind: 'invalid'; readonly schema: ReceiptExtensionSchema }
+
+/** Classify one delivered extension entry: registered+valid, unknown namespace, or invalid payload. */
+export function classifyReceiptExtension(entry: {
+  readonly namespace: string
+  readonly schemaId: string
+  readonly revision: string
+  readonly payload: JsonValue
+}): ExtensionClassification {
+  const schema = extensionSchemas.get(entry.namespace)
+  if (schema === undefined) return { kind: 'unknown' }
+  if (schema.schemaId !== entry.schemaId || schema.revision !== entry.revision) return { kind: 'unknown' }
+  if (!schema.validate(entry.payload)) return { kind: 'invalid', schema }
+  return { kind: 'registered', schema }
+}
+
 /** Helper for component literals (SPEC-02 §6.3). */
 export function capturedComponent(ownerRefs: readonly string[]): { readonly state: 'captured'; readonly reason: null; readonly ownerRefs: readonly string[]; readonly captureBasis: 'provider_verified' } {
   return { state: 'captured', reason: null, ownerRefs, captureBasis: 'provider_verified' }
@@ -28,7 +71,8 @@ export function missingComponent(reason: string): { readonly state: 'missing'; r
 }
 
 /**
- * Build and persist one immutable Submission (SPEC-02 §6.2).
+ * Build and persist one immutable Submission (SPEC-02 §6.2; SPEC-03 §9.1 generalizes the
+ * producer identity and carries the four software extension namespaces).
  * @param store The private owner store.
  * @param input Basis, components, lifecycle, and identity fields of the delivery.
  * @returns The persisted Submission (digest recomputable from its stored bytes).
@@ -40,36 +84,60 @@ export async function persistReceiptSubmission(store: EvidenceStore, input: {
   readonly invocationBasis: RunnerInvocationBasisV1
   readonly expectedResultCallId: CallId
   readonly toolName: string
-  readonly languageProfile: string
+  readonly languageProfile?: string
+  readonly operationProfile?: string
+  readonly providerId?: string
+  readonly providerVersion?: string
+  readonly captureProfileId?: string
+  readonly captureProfileRevision?: string
   readonly invocationDigest: Sha256Digest
   readonly lifecycle: { readonly startedAt: number | null; readonly endedAt: number }
   readonly outcome: RunnerOutcome
   readonly components: ReceiptComponentsV1
+  readonly extensions?: readonly {
+    readonly namespace: string
+    readonly schemaId: string
+    readonly revision: string
+    readonly payload: JsonValue
+  }[]
 }): Promise<EvidenceRunReceiptSubmissionV1> {
   const {
     evidenceGraphId, sessionId, runId, invocationBasis, expectedResultCallId,
-    toolName, languageProfile, invocationDigest, lifecycle, outcome, components,
+    toolName, invocationDigest, lifecycle, outcome, components,
   } = input
+  const languageProfile = input.languageProfile
+  const operationProfile = input.operationProfile
+  const providerId = input.providerId ?? RUNNER_PROVIDER_ID
+  const providerVersion = input.providerVersion ?? RUNNER_PROVIDER_VERSION
+  const captureProfileId = input.captureProfileId ?? (languageProfile !== undefined ? `runner:${languageProfile}` : '')
+  const captureProfileRevision = input.captureProfileRevision ?? languageProfile ?? ''
+  if (captureProfileId === '' || captureProfileRevision === '') {
+    throw new TypeError('persistReceiptSubmission requires a capture profile identity')
+  }
   const envelope = {
     recordVersion: 'animalge.receipt-submission/v1',
     receiptId: newReceiptSubmissionId(),
     receiptSchemaRevision: RECEIPT_SCHEMA_REVISION,
     submittedAt: Date.now(),
-    providerId: RUNNER_PROVIDER_ID,
-    providerVersion: RUNNER_PROVIDER_VERSION,
-    captureProfileId: `runner:${languageProfile}`,
-    captureProfileRevision: languageProfile,
+    providerId,
+    providerVersion,
+    captureProfileId,
+    captureProfileRevision,
     evidenceGraphId,
     sessionId,
     runId,
     invocationBasis,
     expectedResultLocator: { sessionId, callId: expectedResultCallId },
-    operation: { toolName, languageProfile },
+    operation: {
+      toolName,
+      ...(languageProfile === undefined ? {} : { languageProfile }),
+      ...(operationProfile === undefined ? {} : { operationProfile }),
+    },
     invocationDigest,
     lifecycle,
     outcome,
     components,
-    extensions: [],
+    extensions: input.extensions ?? [],
   } as const
   // submissionDigest binds the stored envelope bytes (everything except the digest field
   // itself); the lane recomputes exactly this over the persisted record (§7.2-5).

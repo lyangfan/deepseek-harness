@@ -15,9 +15,16 @@ import {
   compileOutboxSchema,
   contextEntitySchema,
   currentHeadSchema,
+  environmentStateSchema,
   graphRecordSchema,
   headCommitSchema,
+  inputBundleSchema,
   locationObservationSchema,
+  outputFinalizationSchema,
+  outputManifestSchema,
+  outputPlanSchema,
+  outputReservationSchema,
+  preflightReportSchema,
   quarantineRecordSchema,
   queueClockSchema,
   receiptAcceptanceSchema,
@@ -27,10 +34,11 @@ import {
   sourceAnchorSchema,
   stagingRecordSchema,
   storedSnapshotSchema,
+  testedEnvironmentRevisionSchema,
   usageSchema,
 } from './schema.ts'
-import type { ArtifactRecord, ArtifactVersionCore, CapturedInvocation, CompileAttempt, CompileOutbox, ContextEntityRecord, GraphRecord, HeadCommit, LocationObservation, QuarantineRecord, QueueClock, ReceiptAcceptanceRecord, ReceiptLaneRecord, ReceiptSubmission, SessionGraphBootstrap, SourceAnchorRecord, StagingRecord, UsageRecord } from './schema.ts'
-import type { CompileAttemptId, CurrentHeadV1, EvidenceGraphId, EvidenceGraphScopeV1, EvidenceSnapshotPayloadV1, RecoveryId, Sha256Digest, StagingId, StoredSnapshotV1 } from './types.ts'
+import type { ArtifactRecord, ArtifactVersionCore, CapturedInvocation, CompileAttempt, CompileOutbox, ContextEntityRecord, EnvironmentStateRecord, GraphRecord, HeadCommit, LocationObservation, QuarantineRecord, QueueClock, ReceiptAcceptanceRecord, ReceiptLaneRecord, ReceiptSubmission, SessionGraphBootstrap, SourceAnchorRecord, StagingRecord, UsageRecord } from './schema.ts'
+import type { CompileAttemptId, CurrentHeadV1, EnvironmentStateV1, EvidenceGraphId, EvidenceGraphScopeV1, EvidenceRunId, EvidenceSnapshotPayloadV1, InputBundleV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, RecoveryId, Sha256Digest, StagingId, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
 import { snapshotRecord, verifyStoredSnapshot } from './integrity.ts'
 
 type CommitKey = `${string}:${number}`
@@ -42,6 +50,14 @@ type SourceAnchorKey = string
 type ReceiptSubmissionKey = string
 type ReceiptAcceptanceKey = string
 type ReceiptLaneKey = SessionId
+type InputBundleKey = string
+type PreflightReportKey = string
+type EnvironmentRevisionKey = string
+type EnvironmentStateKey = 'global'
+type OutputReservationKey = string
+type OutputPlanKey = string
+type OutputManifestKey = string
+type OutputFinalizationKey = `${string}:${number}`
 
 /** Durable declaration shared by both JSON and SQLite Storage backends. */
 export const evidenceDomainSpec = defineDomain({
@@ -69,6 +85,16 @@ export const evidenceDomainSpec = defineDomain({
     receipt_submissions: domainTable<ReceiptSubmissionKey, ReceiptSubmission>(receiptSubmissionSchema),
     receipt_acceptances: domainTable<ReceiptAcceptanceKey, ReceiptAcceptanceRecord>(receiptAcceptanceSchema),
     receipt_lane: domainTable<ReceiptLaneKey, ReceiptLaneRecord>(receiptLaneSchema),
+    // SPEC-03 professional owner tables (append-only ledgers; environment_state,
+    // output_reservations state, and finalization idempotency use single-record keys).
+    input_bundles: domainTable<InputBundleKey, InputBundleV1>(inputBundleSchema),
+    preflight_reports: domainTable<PreflightReportKey, PreflightReportV1>(preflightReportSchema),
+    environment_revisions: domainTable<EnvironmentRevisionKey, TestedEnvironmentRevisionV1>(testedEnvironmentRevisionSchema),
+    environment_state: domainTable<EnvironmentStateKey, EnvironmentStateV1>(environmentStateSchema),
+    output_reservations: domainTable<OutputReservationKey, OutputReservationV1>(outputReservationSchema),
+    output_plans: domainTable<OutputPlanKey, OutputPlanV1>(outputPlanSchema),
+    output_manifests: domainTable<OutputManifestKey, OutputManifestV1>(outputManifestSchema),
+    output_finalizations: domainTable<OutputFinalizationKey, OutputFinalizationRecordV1>(outputFinalizationSchema),
   },
 })
 
@@ -108,6 +134,7 @@ export class EvidenceStore {
     return owner
   }
 
+
   get graphs(): KvTable<EvidenceGraphId, GraphRecord> { return this.domain.table('graphs') }
   get sessionGraphs(): KvTable<SessionId, SessionGraphBootstrap> { return this.domain.table('session_graphs') }
   get captures(): KvTable<string, CapturedInvocation> { return this.domain.table('captures') }
@@ -128,6 +155,14 @@ export class EvidenceStore {
   get receiptSubmissions(): KvTable<ReceiptSubmissionKey, ReceiptSubmission> { return this.domain.table('receipt_submissions') }
   get receiptAcceptances(): KvTable<ReceiptAcceptanceKey, ReceiptAcceptanceRecord> { return this.domain.table('receipt_acceptances') }
   get receiptLane(): KvTable<ReceiptLaneKey, ReceiptLaneRecord> { return this.domain.table('receipt_lane') }
+  get inputBundles(): KvTable<InputBundleKey, InputBundleV1> { return this.domain.table('input_bundles') }
+  get preflightReports(): KvTable<PreflightReportKey, PreflightReportV1> { return this.domain.table('preflight_reports') }
+  get environmentRevisions(): KvTable<EnvironmentRevisionKey, TestedEnvironmentRevisionV1> { return this.domain.table('environment_revisions') }
+  get environmentState(): KvTable<EnvironmentStateKey, EnvironmentStateV1> { return this.domain.table('environment_state') }
+  get outputReservations(): KvTable<OutputReservationKey, OutputReservationV1> { return this.domain.table('output_reservations') }
+  get outputPlans(): KvTable<OutputPlanKey, OutputPlanV1> { return this.domain.table('output_plans') }
+  get outputManifests(): KvTable<OutputManifestKey, OutputManifestV1> { return this.domain.table('output_manifests') }
+  get outputFinalizations(): KvTable<OutputFinalizationKey, OutputFinalizationRecordV1> { return this.domain.table('output_finalizations') }
 
   /**
    * Owner-serialized immutable put for one SPEC-02 material record (§10.1).
@@ -159,6 +194,61 @@ export class EvidenceStore {
       await this.receiptLane.put(sessionId, next)
       await this.recountNow()
       return next
+    })
+  }
+
+  /** The environment owner's only mutable record: single-record atomic update (SPEC-03 §7.1). */
+  async updateEnvironmentState(
+    update: (current: EnvironmentStateRecord | undefined) => EnvironmentStateV1,
+  ): Promise<EnvironmentStateV1> {
+    return this.enqueue(async () => {
+      const next = update(this.environmentState.get('global'))
+      await this.environmentState.put('global', next)
+      await this.recountNow()
+      return next
+    })
+  }
+
+  environmentStateNow(): EnvironmentStateV1 | undefined {
+    return this.environmentState.get('global')
+  }
+
+  /** Reservation state migration: the reservation record's only mutable field (SPEC-03 §8.1). */
+  async updateOutputReservation(
+    reservationId: string,
+    update: (current: OutputReservationV1) => OutputReservationV1,
+  ): Promise<OutputReservationV1> {
+    return this.enqueue(async () => {
+      const current = this.outputReservations.get(reservationId)
+      if (current === undefined) throw new EvidenceStoreError('reservation_missing', `reservation '${reservationId}' is missing`)
+      await this.outputReservations.put(reservationId, update(current))
+      await this.recountNow()
+      return current
+    })
+  }
+
+  /** Latest finalization per runId (compiler materialization gate lookup, SPEC-03 §8.4). */
+  finalizationForRun(runId: EvidenceGraphId | EvidenceRunId): OutputFinalizationRecordV1 | undefined {
+    let latest: OutputFinalizationRecordV1 | undefined
+    for (const [, row] of this.outputFinalizations.entries()) {
+      if (row.runId !== runId) continue
+      if (latest === undefined || row.finalizedAt > latest.finalizedAt
+        || (row.finalizedAt === latest.finalizedAt && row.finalizationId > latest.finalizationId)) latest = row
+    }
+    return latest
+  }
+
+  /** Startup recovery scan (SPEC-03 §8.1): conservatively abandon every active reservation. */
+  async abandonActiveReservations(): Promise<number> {
+    return this.enqueue(async () => {
+      let abandoned = 0
+      for (const [id, row] of this.outputReservations.entries()) {
+        if (row.state !== 'active') continue
+        await this.outputReservations.put(id, { ...row, state: 'abandoned' })
+        abandoned++
+      }
+      await this.recountNow()
+      return abandoned
     })
   }
 
@@ -215,6 +305,7 @@ export class EvidenceStore {
       ['location_observations', this.locationObservations], ['context_entities', this.contextEntities],
       ['source_anchors', this.sourceAnchors], ['receipt_submissions', this.receiptSubmissions],
       ['receipt_acceptances', this.receiptAcceptances],
+      ['output_finalizations', this.outputFinalizations], ['output_manifests', this.outputManifests],
     ]
     for (const [name, table] of tables) {
       const rows: Array<[string, unknown]> = [...table.entries()].map(([key, value]) => [key, value])
@@ -805,6 +896,10 @@ export class EvidenceStore {
       ['location_observations', this.locationObservations], ['context_entities', this.contextEntities],
       ['source_anchors', this.sourceAnchors], ['receipt_submissions', this.receiptSubmissions],
       ['receipt_acceptances', this.receiptAcceptances], ['receipt_lane', this.receiptLane],
+      ['input_bundles', this.inputBundles], ['preflight_reports', this.preflightReports],
+      ['environment_revisions', this.environmentRevisions], ['environment_state', this.environmentState],
+      ['output_reservations', this.outputReservations], ['output_plans', this.outputPlans],
+      ['output_manifests', this.outputManifests], ['output_finalizations', this.outputFinalizations],
     ]
     let accountedBytes = 0
     let recordCount = 0

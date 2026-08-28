@@ -4,8 +4,8 @@ import { z } from 'zod'
 import type { CallId } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
-import { ArtifactId, ArtifactVersionId, CompileAttemptId, ContextEntityId, EvidenceEdgeId, EvidenceGraphId, EvidenceNodeId, EvidenceRunId, LocationObservationId, ObservationId, ReceiptAcceptanceId, ReceiptSubmissionId, RecoveryId, SourceAnchorId, StagingId } from './identity.ts'
-import type { ArtifactRecordV1, ArtifactVersionCoreV1, CompileAttemptId as CompileAttemptIdType, ContextEntityRecordV1, CurrentHeadV1, EvidenceEdgeV1, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeV1, EvidenceRunReceiptSubmissionV1, EvidenceSnapshotPayloadV1, LocationAvailabilityObservationV1, ReceiptAcceptanceRecordV1, ReceiptLaneV1, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorRecordV1, StagingId as StagingIdType, StoredSnapshotV1 } from './types.ts'
+import { ArtifactId, ArtifactVersionId, CompileAttemptId, ContextEntityId, EvidenceEdgeId, EvidenceGraphId, EvidenceNodeId, EvidenceRunId, InputBundleId, LocationObservationId, ObservationId, OutputFinalizationId, OutputManifestId, OutputPlanId, OutputReservationId, PreflightReportId, ReceiptAcceptanceId, ReceiptSubmissionId, RecoveryId, SourceAnchorId, StagingId, TestedEnvironmentRevisionId } from './identity.ts'
+import type { ArtifactRecordV1, ArtifactVersionCoreV1, CompileAttemptId as CompileAttemptIdType, ContextEntityRecordV1, CurrentHeadV1, EnvironmentStateV1, EvidenceEdgeV1, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeV1, EvidenceRunReceiptSubmissionV1, EvidenceSnapshotPayloadV1, InputBundleV1, LocationAvailabilityObservationV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ReceiptAcceptanceRecordV1, ReceiptLaneV1, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorRecordV1, StagingId as StagingIdType, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
 
 const safeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 /** Strict tagged SHA-256 digest schema. */
@@ -25,6 +25,13 @@ export const contextEntityIdSchema = z.string().transform(ContextEntityId)
 export const sourceAnchorIdSchema = z.string().transform(SourceAnchorId)
 export const receiptSubmissionIdSchema = z.string().transform(ReceiptSubmissionId)
 export const receiptAcceptanceIdSchema = z.string().transform(ReceiptAcceptanceId)
+export const inputBundleIdSchema = z.string().transform(InputBundleId)
+export const preflightReportIdSchema = z.string().transform(PreflightReportId)
+export const testedEnvironmentRevisionIdSchema = z.string().transform(TestedEnvironmentRevisionId)
+export const outputReservationIdSchema = z.string().transform(OutputReservationId)
+export const outputPlanIdSchema = z.string().transform(OutputPlanId)
+export const outputManifestIdSchema = z.string().transform(OutputManifestId)
+export const outputFinalizationIdSchema = z.string().transform(OutputFinalizationId)
 const sessionIdSchema = z.string().min(1).transform(value => value as SessionId)
 const callIdSchema = z.string().min(1).transform(value => value as CallId)
 const workspaceIdSchema = z.string().min(1).transform(value => value as WorkspaceId)
@@ -107,7 +114,11 @@ export const receiptBackedRunPayloadSchema = z.object({
   runSchema: z.literal('animalge.run.receipt-backed/v1'),
   runId: evidenceRunIdSchema,
   runKind: z.literal('tool'),
-  operation: z.object({ toolName: z.string().min(1), languageProfile: z.string().min(1).optional() }).strict(),
+  operation: z.object({
+    toolName: z.string().min(1),
+    languageProfile: z.string().min(1).optional(),
+    operationProfile: z.string().min(1).optional(),
+  }).strict(),
   primaryCallId: callIdSchema,
   invocationDigest: sha256DigestSchema,
   eventBasis: invocationBasisSchema,
@@ -487,7 +498,11 @@ export const receiptSubmissionSchema = z.object({
   runId: evidenceRunIdSchema,
   invocationBasis: runnerInvocationBasisSchema,
   expectedResultLocator: z.object({ sessionId: sessionIdSchema, callId: callIdSchema }).strict(),
-  operation: z.object({ toolName: z.string().min(1), languageProfile: z.string().min(1) }).strict(),
+  operation: z.object({
+    toolName: z.string().min(1),
+    languageProfile: z.string().min(1).optional(),
+    operationProfile: z.string().min(1).optional(),
+  }).strict(),
   invocationDigest: sha256DigestSchema,
   lifecycle: z.object({ startedAt: safeInteger.nullable(), endedAt: safeInteger }).strict(),
   outcome: runnerOutcomeSchema,
@@ -531,6 +546,165 @@ export const receiptLaneSchema = z.object({
   updatedAt: safeInteger,
 }).strict() as unknown as z.ZodType<ReceiptLaneV1>
 
+/** --- SPEC-03 professional-layer owner records --- */
+
+export const inputBundleSchema = z.object({
+  recordVersion: z.literal('animalge.input-bundle/v1'),
+  bundleId: inputBundleIdSchema,
+  bundleKind: z.string().min(1),
+  schemaRevision: z.string().min(1),
+  components: z.array(z.object({
+    role: z.string().min(1),
+    locator: z.string().min(1),
+    artifactVersionId: artifactVersionIdSchema,
+    observationId: locationObservationIdSchema,
+    captureBasis: z.enum(['full_sha256', 'freshness_reuse']),
+  }).strict()),
+  bundleDigest: sha256DigestSchema,
+  createdAt: safeInteger,
+}).strict() as unknown as z.ZodType<InputBundleV1>
+
+export const preflightReportSchema = z.object({
+  recordVersion: z.literal('animalge.preflight-report/v1'),
+  reportId: preflightReportIdSchema,
+  profileIdentity: z.object({ contractId: z.string().min(1), revision: z.string().min(1) }).strict(),
+  softwareVersion: z.string().min(1).nullable(),
+  inputBundleRef: inputBundleIdSchema,
+  coverage: z.enum(['operation_profile', 'baseline_only']),
+  status: z.enum(['incompatible', 'needs_clarification', 'ready_with_warnings', 'ready']),
+  checks: z.array(z.object({
+    checkId: z.string().min(1),
+    severity: z.enum(['incompatible', 'needs_clarification', 'warning']),
+    result: z.enum(['pass', 'fail', 'clarify']),
+    observed: z.json().nullable(),
+  }).strict()),
+  coverageGaps: z.array(z.string().min(1)),
+  warnings: z.array(z.object({ code: z.string().min(1), detail: z.string().min(1) }).strict()),
+  clarification: z.object({ question: z.string().min(1), candidates: z.json() }).strict().nullable(),
+  computedAt: safeInteger,
+  reportDigest: sha256DigestSchema,
+}).strict() as unknown as z.ZodType<PreflightReportV1>
+
+const probeObservationSchema = z.object({
+  component: z.string().min(1),
+  resolvedPath: z.string().min(1),
+  executableDigest: sha256DigestSchema,
+  versionOutput: z.string(),
+  parsedVersion: z.string().min(1).nullable(),
+  observedAt: safeInteger,
+}).strict()
+
+export const testedEnvironmentRevisionSchema = z.object({
+  recordVersion: z.literal('animalge.tested-environment/v1'),
+  revisionId: testedEnvironmentRevisionIdSchema,
+  environmentSpecRevision: z.string().min(1),
+  platform: z.object({ os: z.string().min(1), arch: z.string().min(1) }).strict(),
+  components: z.array(z.object({
+    name: z.string().min(1),
+    kind: z.enum(['executable', 'r_package', 'conda_package']),
+    identity: z.object({
+      version: z.string().min(1),
+      digest: sha256DigestSchema,
+      sourceRef: z.string().min(1).nullable(),
+    }).strict(),
+    resolvedPath: z.string().min(1),
+  }).strict()),
+  inputSchemaRevisions: z.array(z.string().min(1)),
+  frozenAt: safeInteger,
+  frozenFromProbe: z.array(probeObservationSchema),
+}).strict() as unknown as z.ZodType<TestedEnvironmentRevisionV1>
+
+export const environmentStateSchema = z.object({
+  recordVersion: z.literal('animalge.environment-state/v1'),
+  currentRevisionId: testedEnvironmentRevisionIdSchema.nullable(),
+  updatedAt: safeInteger,
+}).strict() as unknown as z.ZodType<EnvironmentStateV1>
+
+export const outputReservationSchema = z.object({
+  recordVersion: z.literal('animalge.output-reservation/v1'),
+  reservationId: outputReservationIdSchema,
+  runId: evidenceRunIdSchema,
+  attempt: safeInteger.min(1),
+  kind: z.enum(['run_exclusive_dir', 'user_specified']),
+  boundary: z.object({
+    rootDir: z.string().min(1),
+    entries: z.array(z.string().min(1)),
+    prefixes: z.array(z.string().min(1)),
+  }).strict(),
+  state: z.enum(['active', 'released', 'abandoned']),
+  createdAt: safeInteger,
+  releasedAt: safeInteger.nullable(),
+  releaseBasis: z.enum(['completed', 'failed', 'cancelled_confirmed']).nullable(),
+}).strict() as unknown as z.ZodType<OutputReservationV1>
+
+export const outputPlanSchema = z.object({
+  recordVersion: z.literal('animalge.output-plan/v1'),
+  planId: outputPlanIdSchema,
+  runId: evidenceRunIdSchema,
+  planRevision: z.string().min(1),
+  generatedByHook: z.string().min(1),
+  roles: z.array(z.object({
+    role: z.string().min(1),
+    pathRule: z.object({ kind: z.enum(['exact', 'prefix']), value: z.string().min(1) }).strict(),
+    required: z.boolean(),
+    cardinality: z.enum(['one', 'many']),
+    bundle: z.string().min(1).nullable(),
+    validator: z.string().min(1),
+  }).strict()),
+  bundles: z.array(z.object({
+    bundleName: z.string().min(1),
+    requiredRoles: z.array(z.string().min(1)),
+  }).strict()),
+  createdAt: safeInteger,
+}).strict() as unknown as z.ZodType<OutputPlanV1>
+
+const boundaryObservationSchema = z.object({
+  locator: z.string().min(1),
+  fileType: z.string().min(1).nullable(),
+  byteLength: safeInteger,
+  observedAt: safeInteger,
+  observationBasis: z.literal('boundary_scan'),
+}).strict()
+
+const formalOutputSchema = z.object({
+  role: z.string().min(1),
+  locator: z.string().min(1),
+  artifactVersionId: artifactVersionIdSchema,
+  contentDigest: sha256DigestSchema,
+  byteLength: safeInteger,
+  captureBasis: z.literal('provider_verified'),
+  validatorResult: z.object({ validator: z.string().min(1), passed: z.boolean() }).strict(),
+  bundle: z.string().min(1).nullable(),
+  disposition: z.enum(['finalized', 'residual_integrity_unknown']).nullable(),
+}).strict()
+
+export const outputManifestSchema = z.object({
+  recordVersion: z.literal('animalge.output-manifest/v1'),
+  manifestId: outputManifestIdSchema,
+  kind: z.enum(['formal', 'diagnostic']),
+  reason: z.literal('output_plan_absent').nullable(),
+  runId: evidenceRunIdSchema,
+  attempt: safeInteger.min(1),
+  reservationId: outputReservationIdSchema,
+  outputPlanId: outputPlanIdSchema.nullable(),
+  formalOutputs: z.array(formalOutputSchema),
+  unclassifiedBoundaryObservations: z.array(boundaryObservationSchema),
+  generatedAt: safeInteger,
+  manifestDigest: sha256DigestSchema,
+}).strict() as unknown as z.ZodType<OutputManifestV1>
+
+export const outputFinalizationSchema = z.object({
+  recordVersion: z.literal('animalge.output-finalization/v1'),
+  finalizationId: outputFinalizationIdSchema,
+  runId: evidenceRunIdSchema,
+  attempt: safeInteger.min(1),
+  manifestId: outputManifestIdSchema,
+  manifestDigest: sha256DigestSchema,
+  finalizedRoles: z.array(z.string().min(1)),
+  finalizedAt: safeInteger,
+  finalizationDigest: sha256DigestSchema,
+}).strict() as unknown as z.ZodType<OutputFinalizationRecordV1>
+
 export interface SessionGraphBootstrap {
   readonly recordVersion: 'animalge.session-graph-bootstrap/v1'
   readonly sessionId: SessionId
@@ -560,5 +734,7 @@ export type SourceAnchorRecord = z.infer<typeof sourceAnchorSchema>
 export type ReceiptSubmission = z.infer<typeof receiptSubmissionSchema>
 export type ReceiptAcceptanceRecord = z.infer<typeof receiptAcceptanceSchema>
 export type ReceiptLaneRecord = z.infer<typeof receiptLaneSchema>
+export type PreflightReportRecord = z.infer<typeof preflightReportSchema>
+export type EnvironmentStateRecord = z.infer<typeof environmentStateSchema>
 
 export type ControlIds = EvidenceGraphIdType | CompileAttemptIdType | StagingIdType | RecoveryIdType

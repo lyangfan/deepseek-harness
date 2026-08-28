@@ -23,6 +23,9 @@ import { AcceptanceLane } from './acceptance.ts'
 import { RUNNER_PROVIDER_ID } from './receipt.ts'
 import { REGISTERED_CAPTURE_PROFILE_IDS } from './runner/profiles.ts'
 import { applySciRunCodeTool } from './runner/index.ts'
+import { applyProfessionalTools, PROFESSIONAL_CAPTURE_PROFILE_IDS } from './professional/index.ts'
+import { SCIENTIFIC_TOOL_PROVIDER_ID } from './professional/runtime.ts'
+import { registerActiveEvidenceStore } from './professional/environment.ts'
 
 export type * from './types.ts'
 export { canonicalDigest, canonicalJson, parseCanonicalJson, sha256Digest } from './canonical-json.ts'
@@ -37,9 +40,13 @@ export { ContextEntityOwner } from './context-entity.ts'
 export { persistReceiptSubmission, verifyReceiptComponents, meetsReceiptBackedMinimum, RECEIPT_SCHEMA_REVISION, RUNNER_PROVIDER_ID, RUNNER_PROVIDER_VERSION } from './receipt.ts'
 export { executeSciRunCode, RunnerInputError } from './runner/execute.ts'
 export { BASH_LANGUAGE_PROFILE, registeredProfile } from './runner/profiles.ts'
+export { applyProfessionalTools, PROFESSIONAL_CAPTURE_PROFILE_IDS } from './professional/index.ts'
+export { SCIENTIFIC_TOOL_PROVIDER_ID } from './professional/runtime.ts'
+export { freezeTestedEnvironmentRevision, freezeCurrentEnvironment, registerActiveEvidenceStore, currentEnvironmentRevision, EnvironmentGateError } from './professional/environment.ts'
+export { EvidenceStore, EvidenceStoreError } from './store.ts'
 
 export const name = 'evidence-core'
-export const inject = ['storageDomain', 'sessionPersistence', 'sessions', 'fs', 'subprocess', 'tools']
+export const inject = ['storageDomain', 'sessionPersistence', 'sessions', 'fs', 'subprocess', 'tools', 'jobs']
 
 /** Exact, revisioned Tool-name rule used by the non-LLM compiler. */
 export interface DeterministicRunSelectionConfig {
@@ -87,6 +94,16 @@ export interface Config {
   readonly runnerLogCaptureMaxBytes: number
   /** Maximum freshness-cache entries for ArtifactVersion hashing reuse. */
   readonly materialHashCacheMaxEntries: number
+  /** Whether the four professional adapter Tools are registered (SPEC-03 §12.1). */
+  readonly professionalToolsEnabled: boolean
+  /** Parent directory of professional run-exclusive output boundaries (SPEC-03 §12.1). */
+  readonly professionalOutputRoot: string
+  /** Default professional execution timeout in milliseconds. */
+  readonly professionalDefaultTimeoutMs: number
+  /** Per-stream captured log bound for professional runs; overflow truncates and marks. */
+  readonly professionalLogCaptureMaxBytes: number
+  /** Maximum roles accepted by one professional Output Plan. */
+  readonly professionalMaxPlanOutputs: number
 }
 
 export const Config: s<Config> = s.object({
@@ -108,6 +125,11 @@ export const Config: s<Config> = s.object({
   runnerMaxDeclaredOutputs: s.natural().min(1).default(64),
   runnerLogCaptureMaxBytes: s.natural().min(1).default(8_388_608),
   materialHashCacheMaxEntries: s.natural().min(1).default(4_096),
+  professionalToolsEnabled: s.boolean().default(true),
+  professionalOutputRoot: s.string().default('.evidence-professional-outputs'),
+  professionalDefaultTimeoutMs: s.natural().min(1).default(600_000),
+  professionalLogCaptureMaxBytes: s.natural().min(1).default(8_388_608),
+  professionalMaxPlanOutputs: s.natural().min(1).default(64),
 })
 
 interface HotSessionState {
@@ -174,6 +196,9 @@ class EvidenceRuntime {
     await this.store.recoverBootstraps()
     await recoverCurrentHeads(this.store)
     await this.store.reconcileAttempts()
+    // SPEC-03 §3.2-4: startup recovery conservatively abandons every active reservation
+    // (§8.1 — spawn-before/after crashes are indistinguishable in persisted state).
+    await this.store.abandonActiveReservations()
     await this.scanCold()
     if (this.lane !== undefined) await this.lane.recoverPending(header => this.isEligible(header))
     const stopEvent = this.ctx.on('session/event', (session, event) => { this.onEvent(session, event) }, { global: true })
@@ -451,9 +476,11 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
   // subprocess service; both are declared in `inject`, so activation waits for them.
   const artifacts = new ArtifactProvider(ctx, store)
   const lane = new AcceptanceLane(ctx, store, {
-    providers: new Set([RUNNER_PROVIDER_ID]),
-    profiles: REGISTERED_CAPTURE_PROFILE_IDS,
+    // SPEC-03 §11.4-1: the lane registry gains the professional producer versioned-incrementally.
+    providers: new Set([RUNNER_PROVIDER_ID, SCIENTIFIC_TOOL_PROVIDER_ID]),
+    profiles: new Set([...REGISTERED_CAPTURE_PROFILE_IDS, ...PROFESSIONAL_CAPTURE_PROFILE_IDS]),
   })
+  registerActiveEvidenceStore(store)
   const runtime = new EvidenceRuntime(ctx, store, config, selection, eligible, lane)
   const cleanup = await runtime.start()
   ctx.effect(() => cleanup, 'evidence-core.runtime()')
@@ -467,6 +494,19 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         runnerDefaultTimeoutMs: config.runnerDefaultTimeoutMs,
         runnerMaxDeclaredOutputs: config.runnerMaxDeclaredOutputs,
         runnerLogCaptureMaxBytes: config.runnerLogCaptureMaxBytes,
+      },
+    })
+  }
+  if (config.professionalToolsEnabled) {
+    applyProfessionalTools(ctx, {
+      store,
+      artifacts,
+      lane,
+      config: {
+        professionalOutputRoot: config.professionalOutputRoot,
+        professionalDefaultTimeoutMs: config.professionalDefaultTimeoutMs,
+        professionalLogCaptureMaxBytes: config.professionalLogCaptureMaxBytes,
+        professionalMaxPlanOutputs: config.professionalMaxPlanOutputs,
       },
     })
   }

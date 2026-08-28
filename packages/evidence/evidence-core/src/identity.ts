@@ -3,9 +3,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import { canonicalJson } from './canonical-json.ts'
-import type { ArtifactId as ArtifactIdType, ArtifactVersionId as ArtifactVersionIdType, CompileAttemptId as CompileAttemptIdType, ContextEntityId as ContextEntityIdType, EvidenceEdgeId as EvidenceEdgeIdType, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeId as EvidenceNodeIdType, EvidenceRunId as EvidenceRunIdType, LocationObservationId as LocationObservationIdType, ObservationId as ObservationIdType, ReceiptAcceptanceId as ReceiptAcceptanceIdType, ReceiptSubmissionId as ReceiptSubmissionIdType, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorId as SourceAnchorIdType, StagingId as StagingIdType } from './types.ts'
+import type { ArtifactId as ArtifactIdType, ArtifactVersionId as ArtifactVersionIdType, CompileAttemptId as CompileAttemptIdType, ContextEntityId as ContextEntityIdType, EvidenceEdgeId as EvidenceEdgeIdType, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeId as EvidenceNodeIdType, EvidenceRunId as EvidenceRunIdType, InputBundleId as InputBundleIdType, LocationObservationId as LocationObservationIdType, ObservationId as ObservationIdType, OutputFinalizationId as OutputFinalizationIdType, OutputManifestId as OutputManifestIdType, OutputPlanId as OutputPlanIdType, OutputReservationId as OutputReservationIdType, PreflightReportId as PreflightReportIdType, ReceiptAcceptanceId as ReceiptAcceptanceIdType, ReceiptSubmissionId as ReceiptSubmissionIdType, RecoveryId as RecoveryIdType, Sha256Digest, SourceAnchorId as SourceAnchorIdType, StagingId as StagingIdType, TestedEnvironmentRevisionId as TestedEnvironmentRevisionIdType } from './types.ts'
 
-const ID_RE = /^(?:eg_|en_|ee_|er_|eo_|ca_|st_|rc_|art_|av_|lo_|ce_|sa_|rs_|ra_)[A-Za-z0-9_-]+$/u
+const ID_RE = /^(?:eg_|en_|ee_|er_|eo_|ca_|st_|rc_|art_|av_|lo_|ce_|sa_|rs_|ra_|ibd_|pfr_|ter_|obr_|opl_|omf_|ofr_)[A-Za-z0-9_-]+$/u
 
 function checked(value: string, prefix: string): string {
   if (!value.startsWith(prefix) || !ID_RE.test(value)) throw new TypeError(`invalid Evidence identity '${value}'`)
@@ -67,6 +67,13 @@ export const ContextEntityId = (value: string): ContextEntityIdType => checked(v
 export const SourceAnchorId = (value: string): SourceAnchorIdType => checked(value, 'sa_') as SourceAnchorIdType
 export const ReceiptSubmissionId = (value: string): ReceiptSubmissionIdType => checked(value, 'rs_') as ReceiptSubmissionIdType
 export const ReceiptAcceptanceId = (value: string): ReceiptAcceptanceIdType => checked(value, 'ra_') as ReceiptAcceptanceIdType
+export const InputBundleId = (value: string): InputBundleIdType => checked(value, 'ibd_') as InputBundleIdType
+export const PreflightReportId = (value: string): PreflightReportIdType => checked(value, 'pfr_') as PreflightReportIdType
+export const TestedEnvironmentRevisionId = (value: string): TestedEnvironmentRevisionIdType => checked(value, 'ter_') as TestedEnvironmentRevisionIdType
+export const OutputReservationId = (value: string): OutputReservationIdType => checked(value, 'obr_') as OutputReservationIdType
+export const OutputPlanId = (value: string): OutputPlanIdType => checked(value, 'opl_') as OutputPlanIdType
+export const OutputManifestId = (value: string): OutputManifestIdType => checked(value, 'omf_') as OutputManifestIdType
+export const OutputFinalizationId = (value: string): OutputFinalizationIdType => checked(value, 'ofr_') as OutputFinalizationIdType
 
 export const newEvidenceGraphId = (): EvidenceGraphIdType => EvidenceGraphId(`eg_${randomUUID()}`)
 export const newCompileAttemptId = (): CompileAttemptIdType => CompileAttemptId(`ca_${randomUUID()}`)
@@ -79,6 +86,13 @@ export const newContextEntityId = (): ContextEntityIdType => ContextEntityId(`ce
 export const newSourceAnchorId = (): SourceAnchorIdType => SourceAnchorId(`sa_${randomUUID()}`)
 export const newReceiptSubmissionId = (): ReceiptSubmissionIdType => ReceiptSubmissionId(`rs_${randomUUID()}`)
 export const newReceiptAcceptanceId = (): ReceiptAcceptanceIdType => ReceiptAcceptanceId(`ra_${randomUUID()}`)
+export const newInputBundleId = (): InputBundleIdType => InputBundleId(`ibd_${randomUUID()}`)
+export const newPreflightReportId = (): PreflightReportIdType => PreflightReportId(`pfr_${randomUUID()}`)
+export const newTestedEnvironmentRevisionId = (): TestedEnvironmentRevisionIdType => TestedEnvironmentRevisionId(`ter_${randomUUID()}`)
+export const newOutputReservationId = (): OutputReservationIdType => OutputReservationId(`obr_${randomUUID()}`)
+export const newOutputPlanId = (): OutputPlanIdType => OutputPlanId(`opl_${randomUUID()}`)
+export const newOutputManifestId = (): OutputManifestIdType => OutputManifestId(`omf_${randomUUID()}`)
+export const newOutputFinalizationId = (): OutputFinalizationIdType => OutputFinalizationId(`ofr_${randomUUID()}`)
 
 /**
  * Derive a stable Run identity.

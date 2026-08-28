@@ -4,13 +4,12 @@ import { createHash } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
-import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
-import type { JsonValue, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session/types'
+import type { JsonValue } from '@deepseek-ai/dsh-session/types'
 import { canonicalDigest } from '../canonical-json.ts'
-import { eventRef } from '../capture.ts'
 import { deriveRunId } from '../identity.ts'
 import { ArtifactConflictError, type ArtifactProvider, type UnifiedFileHandle } from '../artifact.ts'
 import { capturedComponent, missingComponent, persistReceiptSubmission } from '../receipt.ts'
+import { buildChildEnv, findOwnBasis, runManagedProcess } from '../professional/runtime.ts'
 import type { ReceiptComponentsV1, ReceiptSubmissionId, RunnerInvocationBasisV1, RunnerOutcome } from '../types.ts'
 import type { EvidenceStore } from '../store.ts'
 import type { AcceptanceLane } from '../acceptance.ts'
@@ -54,25 +53,6 @@ interface SettledOutput {
 
 function secretPlaceholder(value: string): string {
   return `secret:${createHash('sha256').update(value).digest('hex').slice(0, 16)}`
-}
-
-/** Resolve the producer-claimed invocation basis from the persisted Session prefix (§6.2). */
-function findOwnBasis(
-  events: readonly SessionEvent[],
-  header: SessionHeader,
-  exec: ToolExecution,
-): { readonly basis: RunnerInvocationBasisV1; readonly startSeq: number } | undefined {
-  if (exec.parent === undefined) {
-    const call = events.find((event): event is SessionEvent<'tool/call'> => event.type === 'tool/call' && event.data.callId === exec.callId)
-    if (call === undefined) return undefined
-    return { basis: { kind: 'direct', callId: exec.callId, startEventRef: eventRef(header, call) }, startSeq: call.seq }
-  }
-  const start = events.find((event): event is SessionEvent<'tool/code-dispatch-start'> => event.type === 'tool/code-dispatch-start' && event.data.subCallId === exec.callId)
-  if (start === undefined) return undefined
-  return {
-    basis: { kind: 'code_dispatch', rootCallId: start.data.rootCallId, parentCallId: start.data.parentCallId, subCallId: start.data.subCallId, startEventRef: eventRef(header, start) },
-    startSeq: start.seq,
-  }
 }
 
 /**
@@ -216,62 +196,43 @@ export async function executeSciRunCode(options: {
   stderrLogTarget.path = `${runDirPath}/stderr.log`
 
   // Environment allowlist (§9.3): scrubbed parent base ∩ allowlist, plus declared entries.
-  const allow = new Set([...activeProfile.defaultEnvAllowlist, ...activeProfile.extraEnvAllowlist])
-  for (const entry of input.env) {
-    if (!allow.has(entry.name)) return notStarted('env_not_allowed', `environment variable '${entry.name}' is not allowlisted`)
+  const childEnvResult = buildChildEnv(activeProfile.defaultEnvAllowlist, activeProfile.extraEnvAllowlist, input.env, exec.signal)
+  if (!childEnvResult.ok) {
+    return notStarted(childEnvResult.code, `environment variable '${childEnvResult.name}' is not allowlisted`)
   }
-  const scrubbed: Record<string, string> = scrubbedParentEnv()
-  const childEnv: Record<string, string> = {}
-  for (const name of activeProfile.defaultEnvAllowlist) {
-    const value = scrubbed[name]
-    if (value !== undefined) childEnv[name] = value
-  }
-  for (const entry of input.env) childEnv[entry.name] = entry.value
 
-  // §9.3 steps 3–6: write the exact code bytes, spawn, collect, terminate.
+  // §9.3 steps 3–6: write the exact code bytes, spawn, collect, terminate — via the shared
+  // Runtime execution core (SPEC-03 §3.3: one spawn implementation for runner and adapters).
   const codeBytes = await artifacts.readVersionBytes(codeCapture.artifactVersionId, exec.signal)
   const scriptPath = `${runDirPath}/script.sh`
   await ctx.fs.writeText(await ctx.fs.resolve(scriptPath), new TextDecoder().decode(codeBytes), undefined, exec.signal)
 
-  const timeout = new AbortController()
-  const timer = setTimeout(() => { timeout.abort(new Error('runner timeout')) }, timeoutMs)
-  const signal = AbortSignal.any([exec.signal, timeout.signal])
-  let outcome: RunnerOutcome = 'succeeded'
+  const managed = await runManagedProcess({
+    ctx,
+    argv: [...activeProfile.argvTemplate, scriptPath, ...input.args],
+    cwd: runDirPath,
+    env: childEnvResult.env,
+    timeoutMs,
+    logCaptureMaxBytes: config.runnerLogCaptureMaxBytes,
+    abortSignal: exec.signal,
+    stdoutLogPath: stdoutLogTarget.path,
+    stderrLogPath: stderrLogTarget.path,
+  })
+  let outcome: RunnerOutcome
   let logsCaptured = false
-  try {
-    const handle = ctx.subprocess.spawn({
-      argv: [...activeProfile.argvTemplate, scriptPath, ...input.args],
-      cwd: runDirPath,
-      stdio: {
-        stdin: 'ignore',
-        stdout: { maxBytes: config.runnerLogCaptureMaxBytes, spill: { maxBytes: 16 * config.runnerLogCaptureMaxBytes } },
-        stderr: { maxBytes: config.runnerLogCaptureMaxBytes, spill: { maxBytes: 16 * config.runnerLogCaptureMaxBytes } },
-      },
-      graceMs: 5_000,
-      env: childEnv,
-      signal,
-    })
-    if (handle.pid < 0) {
-      outcome = 'not_started'
-    } else {
-      const settled = await handle.done
-      const stdout = handle.collected.stdout?.readFrom(0)
-      const stderr = handle.collected.stderr?.readFrom(0)
-      await ctx.fs.writeText(await ctx.fs.resolve(stdoutLogTarget.path), stdout?.text ?? '', undefined, exec.signal)
-      await ctx.fs.writeText(await ctx.fs.resolve(stderrLogTarget.path), stderr?.text ?? '', undefined, exec.signal)
-      logsCaptured = true
-      if (signalRef.aborted) outcome = 'cancelled'
-      else if (timeout.signal.aborted || settled.exitCode !== 0) outcome = 'failed'
-      else outcome = 'succeeded'
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return await notStarted('interpreter_unavailable', `interpreter for profile '${activeProfile.profileId}' could not be resolved`)
-    }
+  if (managed.kind === 'not_started' && managed.reason === 'spawn_failed') {
+    return await notStarted('interpreter_unavailable', `interpreter for profile '${activeProfile.profileId}' could not be resolved`)
+  }
+  if (managed.kind === 'not_started') {
+    outcome = 'not_started'
+  } else if (managed.kind === 'unknown') {
     // Termination request failed or the final state cannot be confirmed (§9.3): stay unknown.
-    outcome = signalRef.aborted ? 'cancelled' : 'outcome_unknown'
-  } finally {
-    clearTimeout(timer)
+    outcome = managed.cancelled ? 'cancelled' : 'outcome_unknown'
+  } else {
+    logsCaptured = managed.logsCaptured
+    if (managed.cancelled) outcome = 'cancelled'
+    else if (managed.timedOut || managed.exitCode !== 0) outcome = 'failed'
+    else outcome = 'succeeded'
   }
 
   // §9.4: settle declared outputs — only declared files, only inside the exclusive directory.

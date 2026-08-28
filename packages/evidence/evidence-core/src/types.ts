@@ -264,7 +264,8 @@ export interface EvidenceRunReceiptSubmissionV1 {
   readonly runId: EvidenceRunId
   readonly invocationBasis: RunnerInvocationBasisV1
   readonly expectedResultLocator: { readonly sessionId: SessionId; readonly callId: CallId }
-  readonly operation: { readonly toolName: string; readonly languageProfile: string }
+  /** SPEC-03 §11.4-2 additive diff: languageProfile optional, operationProfile added. */
+  readonly operation: { readonly toolName: string; readonly languageProfile?: string; readonly operationProfile?: string }
   readonly invocationDigest: Sha256Digest
   readonly lifecycle: { readonly startedAt: number | null; readonly endedAt: number }
   readonly outcome: RunnerOutcome
@@ -388,7 +389,7 @@ export interface ReceiptBackedRunPayloadV1 {
   readonly runSchema: 'animalge.run.receipt-backed/v1'
   readonly runId: EvidenceRunId
   readonly runKind: 'tool'
-  readonly operation: { readonly toolName: string; readonly languageProfile?: string }
+  readonly operation: { readonly toolName: string; readonly languageProfile?: string; readonly operationProfile?: string }
   readonly primaryCallId: CallId
   readonly invocationDigest: Sha256Digest
   readonly eventBasis: InvocationEventBasisV1
@@ -412,4 +413,190 @@ export interface ReceiptBackedRunPayloadV1 {
     readonly randomness: PayloadComponentStateV1
     readonly logs: PayloadComponentStateV1
   }
+}
+
+/** --- SPEC-03 professional-layer identities and objects --- */
+
+/** Unique identity of one normalized input bundle (SPEC-03 §6.1). */
+export type InputBundleId = Branded<'InputBundleId'>
+/** Unique identity of one persisted preflight report (SPEC-03 §6.2). */
+export type PreflightReportId = Branded<'PreflightReportId'>
+/** Unique identity of one frozen TestedEnvironmentRevision (SPEC-03 §7.1). */
+export type TestedEnvironmentRevisionId = Branded<'TestedEnvironmentRevisionId'>
+/** Unique identity of one output boundary reservation (SPEC-03 §8.1). */
+export type OutputReservationId = Branded<'OutputReservationId'>
+/** Unique identity of one persisted output plan (SPEC-03 §8.2). */
+export type OutputPlanId = Branded<'OutputPlanId'>
+/** Unique identity of one formal/diagnostic output manifest (SPEC-03 §8.3). */
+export type OutputManifestId = Branded<'OutputManifestId'>
+/** Unique identity of one output finalization record (SPEC-03 §8.4). */
+export type OutputFinalizationId = Branded<'OutputFinalizationId'>
+
+/** Immutable normalized input bundle value object (SPEC-03 §6.1; not a DAG node or copy). */
+export interface InputBundleV1 {
+  readonly recordVersion: 'animalge.input-bundle/v1'
+  readonly bundleId: InputBundleId
+  readonly bundleKind: string
+  readonly schemaRevision: string
+  readonly components: readonly {
+    readonly role: string
+    readonly locator: string
+    readonly artifactVersionId: ArtifactVersionId
+    readonly observationId: LocationObservationId
+    readonly captureBasis: 'full_sha256' | 'freshness_reuse'
+  }[]
+  readonly bundleDigest: Sha256Digest
+  readonly createdAt: number
+}
+
+/** Immutable persisted preflight report: one of exactly four states (SPEC-03 §6.2). */
+export interface PreflightReportV1 {
+  readonly recordVersion: 'animalge.preflight-report/v1'
+  readonly reportId: PreflightReportId
+  readonly profileIdentity: { readonly contractId: string; readonly revision: string }
+  readonly softwareVersion: string | null
+  readonly inputBundleRef: InputBundleId
+  readonly coverage: 'operation_profile' | 'baseline_only'
+  readonly status: 'incompatible' | 'needs_clarification' | 'ready_with_warnings' | 'ready'
+  readonly checks: readonly {
+    readonly checkId: string
+    readonly severity: 'incompatible' | 'needs_clarification' | 'warning'
+    readonly result: 'pass' | 'fail' | 'clarify'
+    readonly observed: JsonValue | null
+  }[]
+  readonly coverageGaps: readonly string[]
+  readonly warnings: readonly { readonly code: string; readonly detail: string }[]
+  readonly clarification: { readonly question: string; readonly candidates: JsonValue } | null
+  readonly computedAt: number
+  readonly reportDigest: Sha256Digest
+}
+
+/** Deterministic observation of one environment component (SPEC-03 §7.1). */
+export interface ProbeObservationV1 {
+  readonly component: string
+  readonly resolvedPath: string
+  readonly executableDigest: Sha256Digest
+  readonly versionOutput: string
+  readonly parsedVersion: string | null
+  readonly observedAt: number
+}
+
+/** Immutable TestedEnvironmentRevision frozen only from real probe results (SPEC-03 §7.1). */
+export interface TestedEnvironmentRevisionV1 {
+  readonly recordVersion: 'animalge.tested-environment/v1'
+  readonly revisionId: TestedEnvironmentRevisionId
+  readonly environmentSpecRevision: string
+  readonly platform: { readonly os: string; readonly arch: string }
+  readonly components: readonly {
+    readonly name: string
+    readonly kind: 'executable' | 'r_package' | 'conda_package'
+    readonly identity: { readonly version: string; readonly digest: Sha256Digest; readonly sourceRef: string | null }
+    readonly resolvedPath: string
+  }[]
+  readonly inputSchemaRevisions: readonly string[]
+  readonly frozenAt: number
+  readonly frozenFromProbe: readonly ProbeObservationV1[]
+}
+
+/** Single mutable pointer record naming the current environment revision (SPEC-03 §7.1). */
+export interface EnvironmentStateV1 {
+  readonly recordVersion: 'animalge.environment-state/v1'
+  readonly currentRevisionId: TestedEnvironmentRevisionId | null
+  readonly updatedAt: number
+}
+
+/** Persisted, normalized, mutually exclusive output boundary reservation (SPEC-03 §8.1). */
+export interface OutputReservationV1 {
+  readonly recordVersion: 'animalge.output-reservation/v1'
+  readonly reservationId: OutputReservationId
+  readonly runId: EvidenceRunId
+  readonly attempt: number
+  readonly kind: 'run_exclusive_dir' | 'user_specified'
+  readonly boundary: { readonly rootDir: string; readonly entries: readonly string[]; readonly prefixes: readonly string[] }
+  readonly state: 'active' | 'released' | 'abandoned'
+  readonly createdAt: number
+  readonly releasedAt: number | null
+  readonly releaseBasis: 'completed' | 'failed' | 'cancelled_confirmed' | null
+}
+
+/** Pre-execution declaration of expected formal outputs (SPEC-03 §8.2). */
+export interface OutputPlanV1 {
+  readonly recordVersion: 'animalge.output-plan/v1'
+  readonly planId: OutputPlanId
+  readonly runId: EvidenceRunId
+  readonly planRevision: string
+  readonly generatedByHook: string
+  readonly roles: readonly {
+    readonly role: string
+    readonly pathRule: { readonly kind: 'exact' | 'prefix'; readonly value: string }
+    readonly required: boolean
+    readonly cardinality: 'one' | 'many'
+    readonly bundle: string | null
+    readonly validator: string
+  }[]
+  readonly bundles: readonly { readonly bundleName: string; readonly requiredRoles: readonly string[] }[]
+  readonly createdAt: number
+}
+
+/** Unclassified file observed inside a reserved boundary (SPEC-03 §8.3). */
+export interface BoundaryObservationV1 {
+  readonly locator: string
+  readonly fileType: string | null
+  readonly byteLength: number
+  readonly observedAt: number
+  readonly observationBasis: 'boundary_scan'
+}
+
+/** One validated formal output row inside a formal manifest (SPEC-03 §8.3). */
+export interface FormalOutputV1 {
+  readonly role: string
+  readonly locator: string
+  readonly artifactVersionId: ArtifactVersionId
+  readonly contentDigest: Sha256Digest
+  readonly byteLength: number
+  readonly captureBasis: 'provider_verified'
+  readonly validatorResult: { readonly validator: string; readonly passed: boolean }
+  readonly bundle: string | null
+  readonly disposition: 'finalized' | 'residual_integrity_unknown' | null
+}
+
+/** Closed formal/diagnostic union bound to runId/attempt (SPEC-03 §8.3). */
+export interface OutputManifestV1 {
+  readonly recordVersion: 'animalge.output-manifest/v1'
+  readonly manifestId: OutputManifestId
+  readonly kind: 'formal' | 'diagnostic'
+  readonly reason: 'output_plan_absent' | null
+  readonly runId: EvidenceRunId
+  readonly attempt: number
+  readonly reservationId: OutputReservationId
+  readonly outputPlanId: OutputPlanId | null
+  readonly formalOutputs: readonly FormalOutputV1[]
+  readonly unclassifiedBoundaryObservations: readonly BoundaryObservationV1[]
+  readonly generatedAt: number
+  readonly manifestDigest: Sha256Digest
+}
+
+/** The only publication commit marker for formal outputs (SPEC-03 §8.4; runId/attempt idempotent). */
+export interface OutputFinalizationRecordV1 {
+  readonly recordVersion: 'animalge.output-finalization/v1'
+  readonly finalizationId: OutputFinalizationId
+  readonly runId: EvidenceRunId
+  readonly attempt: number
+  readonly manifestId: OutputManifestId
+  readonly manifestDigest: Sha256Digest
+  readonly finalizedRoles: readonly string[]
+  readonly finalizedAt: number
+  readonly finalizationDigest: Sha256Digest
+}
+
+/** Minimal referencing canonical Tool result shared by all professional tools (SPEC-03 §9.4). */
+export interface ProfessionalToolResultV1 {
+  readonly runId: string
+  readonly outcome: RunnerOutcome
+  readonly outputCompleteness: 'complete' | 'incomplete' | 'unknown'
+  readonly outputCompletenessReason: string | null
+  readonly outputManifestRef: string | null
+  readonly outputs: readonly { readonly role: string; readonly artifactVersionRef: string }[]
+  readonly receiptSubmissionRef: string
+  readonly error?: { readonly code: string; readonly message: string }
 }
