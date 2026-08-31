@@ -59,9 +59,40 @@ plugin 必须获得 `ctx.storageDomain`、`ctx.sessionPersistence` 和 `ctx.sess
 
 相互独立。本包不修改模型请求前缀或 Tool schema。
 
+### 候选语义通道（SPEC-04）
+
+#### 模型看到什么
+
+当显式配置 `evidenceModel` 后，后台语义通道对每个完整持久 turn 发送一个额外模型请求：公开用户/Agent 文本的有界投影（仅文本 block——reasoning block 硬排除）、紧凑 Tool 结果摘要、待选 Run 摘要和既有候选最小摘要。完整 canonical 请求字节在派发前作为 log-only `evidence/model-request` Session 事件持久化，因此"模型看到了什么"始终可从 Session 日志重建。聊天 Agent 本身永远看不到这些请求。
+
+#### Token 影响
+
+每次语义 attempt 一个辅助请求，大小由 turn 内容与声明的逐项截断限定（无额度）。Session 级"AI 候选提取"开关关闭或路由未配置时零请求；确定性通道不受影响继续推进。
+
+#### KV Cache 影响
+
+经 `ctx.llm` 以显式 `evidenceModel` 路由的独立辅助调用；永不共享聊天 Agent 的请求前缀。
+
+### 专业 Tool 运行时（SPEC-03）
+
+#### 模型看到什么
+
+经共享 `defineProfessionalTool()` 工厂注册的四个正常 DSH Tool：`plink_cli`、`himvp_cli`、`r_script` 和 `cmplot_call`。每个暴露一个类型化输入 bundle、一组有界结构化参数、逐字原生 flag 透传（`native_args`）和一个最小引用型结果：`runId`、`outcome`、`outputCompleteness`（+原因）、`outputManifestRef`、正式 `outputs[]` 和 `receiptSubmissionRef`。引导使用位于各 adapter spec 引用的版本化指南文件中，不在 Tool schema 内。
+
+#### Token 影响
+
+有界：仅结果 JSON（不含表格、日志、报告正文或图片字节）。Agent 经正常文件读取按精确 ArtifactVersion 引用读取 Artifact 内容。
+
+#### KV Cache 影响
+
+Tool schema 跨调用稳定；结果卡仅从持久内容和有界展示元数据重放。
+
 ## 已知限制与延后工作
 
 - version `0` 只支持本地、单用户、单 host process writer。
 - `accountedBytes` 是 canonical 逻辑记录用量，不是物理磁盘占用。
 - SPEC-01 只捕获确定性 Run 与终态 Observation provenance。Artifact、Receipt、SourceAnchor、语义通道、UI、领域 Tool、Bundle 和正式 `animalge-open` preset 均不属于本包。
 - 选择规则为精确 Tool 名匹配。revision 或 rule digest 变化时从权威 capture 重编译，绝不重跑 Tool。
+- 专业 adapter 仅通过 fake executable/R package 验证（SPEC-03 §13.3）；真实软件证据、Genetics Bundle、`animalge-open` Preset、路由强制和 `tested_on_exact_revision` 归 SPEC-07。
+- TestedEnvironmentRevision identity 覆盖冻结时探测的组件 digest；provisioning 本身是 SPEC-07 范围。
+- `ctx.jobs` 投影是进程内的；非正常退出后，活动输出 reservation 保守保持 `abandoned`，永不重新打开（SPEC-03 §8.1）。
