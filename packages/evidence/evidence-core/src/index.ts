@@ -26,6 +26,8 @@ import { applySciRunCodeTool } from './runner/index.ts'
 import { applyProfessionalTools, PROFESSIONAL_CAPTURE_PROFILE_IDS } from './professional/index.ts'
 import { SCIENTIFIC_TOOL_PROVIDER_ID } from './professional/runtime.ts'
 import { registerActiveEvidenceStore } from './professional/environment.ts'
+import { issueStateRevision } from './issues.ts'
+import type { EvidenceUpdatedEventV1 } from './types.ts'
 import type {} from './semantic/events.ts'
 import { resolveEvidenceModelRoute, resolveSemanticProjectionConfig } from './semantic/model-route.ts'
 import type { EvidenceModelRouteV1, SemanticProjectionConfig } from './semantic/model-route.ts'
@@ -38,7 +40,7 @@ export { evidenceEdgeSchema, evidenceGraphScopeSchema, evidenceNodeSchema, evide
 export { verifySnapshot, verifyStoredSnapshot } from './integrity.ts'
 export { buildEvidenceExport, explicitSnapshotDigest, verifyEvidenceExport, writeEvidenceExport } from './export.ts'
 export { ArtifactProvider, ArtifactConflictError } from './artifact.ts'
-export { SourceAnchorOwner, AnchorError, REGISTERED_ANCHOR_KINDS, SOURCE_ANCHOR_VERIFIER_REVISION } from './anchor.ts'
+export { SourceAnchorOwner, AnchorError, REGISTERED_ANCHOR_KINDS, SOURCE_ANCHOR_VERIFIER_REVISION, computeAnchorSlice } from './anchor.ts'
 export { AcceptanceLane } from './acceptance.ts'
 export { ContextEntityOwner } from './context-entity.ts'
 export { persistReceiptSubmission, verifyReceiptComponents, meetsReceiptBackedMinimum, RECEIPT_SCHEMA_REVISION, RUNNER_PROVIDER_ID, RUNNER_PROVIDER_VERSION } from './receipt.ts'
@@ -47,7 +49,8 @@ export { BASH_LANGUAGE_PROFILE, registeredProfile } from './runner/profiles.ts'
 export { applyProfessionalTools, PROFESSIONAL_CAPTURE_PROFILE_IDS } from './professional/index.ts'
 export { SCIENTIFIC_TOOL_PROVIDER_ID } from './professional/runtime.ts'
 export { freezeTestedEnvironmentRevision, freezeCurrentEnvironment, registerActiveEvidenceStore, currentEnvironmentRevision, EnvironmentGateError } from './professional/environment.ts'
-export { EvidenceStore, EvidenceStoreError } from './store.ts'
+export { EvidenceStore, EvidenceStoreError, processBacklog } from './store.ts'
+export type { BacklogOutcome } from './store.ts'
 export { resolveEvidenceModelRoute, resolveSemanticProjectionConfig, ModelRouteError } from './semantic/model-route.ts'
 export type { EvidenceModelRouteV1, SemanticProjectionConfig } from './semantic/model-route.ts'
 export { SemanticLane, SemanticLaneError } from './semantic/lane.ts'
@@ -55,6 +58,16 @@ export { semanticSwitchEnabled, setSemanticSwitchEnabled, SEMANTIC_SWITCH_DEFAUL
 export { semanticSnapshotFor, CANDIDATE_CONTRACT_REVISION } from './semantic/candidates.ts'
 export { validateExtractionOutput, semanticExtractionOutputSchema } from './semantic/output-schema.ts'
 export { buildSemanticProjection, SEMANTIC_SYSTEM_PROMPT } from './semantic/projection.ts'
+export { deriveIssues, markIssuesSeen, issueStateRevision, issueRecordsFor, issueSeenFor, unreadIssueCount, openIssueCount, issueKeyOf, ISSUE_DERIVATION_REVISION } from './issues.ts'
+export { graphStatusFacts, pendingIncrementOf, freshnessOf } from './derive.ts'
+export { issueRecordSchema, issueSeenSchema } from './schema.ts'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** SPEC-05 §12.2-1: the narrow read-access service over the private Evidence owner store. */
+    evidenceStore: EvidenceStore
+  }
+}
 
 export const name = 'evidence-core'
 export const inject = ['storageDomain', 'sessionPersistence', 'sessions', 'fs', 'subprocess', 'tools', 'jobs']
@@ -233,6 +246,8 @@ class EvidenceRuntime {
   private readonly hints = new Map<SessionId, CaptureHint>()
   private captureRun: Promise<void> | undefined
   private compileRun: Promise<void> | undefined
+  /** SPEC-05 wake fix: re-trigger flag for requestCompile calls during an active compile. */
+  private compilePending = false
   private stopping = false
   private readonly abort = new AbortController()
   private gcTimer: ReturnType<typeof setInterval> | undefined
@@ -442,12 +457,30 @@ class EvidenceRuntime {
   }
 
   private requestCompile(): void {
-    if (this.stopping || this.compileRun !== undefined) return
+    if (this.stopping) return
+    // SPEC-05 §12.2 contract-diff extension (user ruling 2026-08-29 Option A): a
+    // requestCompile() call during an active compile sets a pending flag instead of
+    // being silently dropped — the running compile's finally block re-triggers it,
+    // so subsequent-turn outbox rows are never orphaned by a busy compile loop.
+    if (this.compileRun !== undefined) {
+      this.compilePending = true
+      return
+    }
     if (this.compileTimer !== undefined) { clearTimeout(this.compileTimer); this.compileTimer = undefined }
     this.compileRun = this.drainCompile().finally(() => {
       this.compileRun = undefined
+      if (this.compilePending) {
+        this.compilePending = false
+        this.requestCompile()
+      }
       this.scheduleCompileWake()
     })
+  }
+
+  /** SPEC-05 §11.4-2: owner-side compile wake entry behind the backlog verb. Idempotent —
+   * requestCompile's own guards fold a wake during an active compile into the pending flag. */
+  wakeCompile(): void {
+    this.requestCompile()
   }
 
   private scheduleCompileWake(): void {
@@ -566,6 +599,31 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     profiles: new Set([...REGISTERED_CAPTURE_PROFILE_IDS, ...PROFESSIONAL_CAPTURE_PROFILE_IDS]),
   })
   registerActiveEvidenceStore(store)
+  // SPEC-05 §12.2-1/4: the narrow read-access service and the transition notifier. The notifier
+  // recomputes issues (queued after the triggering mutation) and then emits 'evidence/updated'
+  // with the three version tokens; failures degrade to a warning, never break the mutation.
+  ctx.provide('evidenceStore', store)
+  store.stateNotifier = (graphId) => {
+    void (async () => {
+      try {
+        await store.recomputeIssuesFor(graphId)
+        const graph = store.graphs.get(graphId)
+        if (graph === undefined) return
+        const head = store.heads.get(graphId)
+        const payload: EvidenceUpdatedEventV1 = {
+          sessionId: graph.scope.sessionId,
+          graphId,
+          materialStateDigest: store.materialStateDigest(),
+          headRevision: head?.headRevision ?? 0,
+          issuesRevision: issueStateRevision(store),
+          currentSnapshotDigest: head?.snapshotDigest ?? null,
+        }
+        ctx.emit('evidence/updated', payload)
+      } catch (error: unknown) {
+        ctx.logger.warn(`evidence-core: issue recompute/notify failed for ${String(graphId)}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })()
+  }
   // SPEC-04 §3.2: the semantic lane's abort/stopping state rides the runtime lifecycle —
   // dispose aborts in-flight model calls (settled aborted, never misreported as model errors).
   const semanticStop = { stopping: false }
@@ -578,8 +636,14 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
       () => semanticStop.stopping, semanticAbort.signal,
     )
   const runtime = new EvidenceRuntime(ctx, store, config, selection, eligible, lane, semantic)
+  // SPEC-05 §11.4-2: the backlog verb's wake entry (owner function → store callback → runtime).
+  store.compileWakeNotifier = () => { runtime.wakeCompile() }
   const cleanup = await runtime.start()
-  ctx.effect(() => async () => { semanticStop.stopping = true; semanticAbort.abort(new Error('evidence-core disposed')); await cleanup() }, 'evidence-core.runtime()')
+  ctx.effect(() => async () => {
+    semanticStop.stopping = true
+    semanticAbort.abort(new Error('evidence-core disposed'))
+    await cleanup()
+  }, 'evidence-core.runtime()')
   if (config.runnerEnabled) {
     applySciRunCodeTool(ctx, {
       store,

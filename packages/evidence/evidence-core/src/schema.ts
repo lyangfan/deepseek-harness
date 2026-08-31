@@ -5,7 +5,7 @@ import type { CallId } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { ArtifactId, ArtifactVersionId, CandidateStatementId, CompileAttemptId, ContextEntityId, EvidenceEdgeId, EvidenceGraphId, EvidenceNodeId, EvidenceRunId, InputBundleId, LocationObservationId, ModelCallId, ObservationId, OutputFinalizationId, OutputManifestId, OutputPlanId, OutputReservationId, PreflightReportId, ReceiptAcceptanceId, ReceiptSubmissionId, RecoveryId, SourceAnchorId, StagingId, TestedEnvironmentRevisionId } from './identity.ts'
-import type { ArtifactRecordV1, ArtifactVersionCoreV1, CandidateRecordV1, CandidateRelationRecordV1, CompileAttemptId as CompileAttemptIdType, ContextEntityRecordV1, CurrentHeadV1, EnvironmentStateV1, EvidenceEdgeV1, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeV1, EvidenceRunReceiptSubmissionV1, EvidenceSnapshotPayloadV1, InputBundleV1, LocationAvailabilityObservationV1, ModelCallRecordV1, ModelRunSelectionRecordV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ProposalValidationRecordV1, ReceiptAcceptanceRecordV1, ReceiptLaneV1, RecoveryId as RecoveryIdType, SemanticLaneV1, SemanticSwitchV1, Sha256Digest, SourceAnchorRecordV1, StagingId as StagingIdType, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
+import type { ArtifactRecordV1, ArtifactVersionCoreV1, CandidateRecordV1, CandidateRelationRecordV1, CompileAttemptId as CompileAttemptIdType, ContextEntityRecordV1, CurrentHeadV1, EnvironmentStateV1, EvidenceEdgeV1, EvidenceGraphId as EvidenceGraphIdType, EvidenceNodeV1, EvidenceRunReceiptSubmissionV1, EvidenceSnapshotPayloadV1, InputBundleV1, LocationAvailabilityObservationV1, ModelCallRecordV1, ModelRunSelectionRecordV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ProposalValidationRecordV1, ReceiptAcceptanceRecordV1, ReceiptLaneV1, RecoveryId as RecoveryIdType, SemanticLaneV1, SemanticSwitchV1, Sha256Digest, SourceAnchorRecordV1, StagingId as StagingIdType, StoredSnapshotV1, TestedEnvironmentRevisionV1 , IssueRecordV1, IssueSeenV1 } from './types.ts'
 
 const safeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 /** Strict tagged SHA-256 digest schema. */
@@ -820,6 +820,30 @@ export const semanticSwitchSchema = z.object({
   enabled: z.boolean(),
   updatedAt: safeInteger,
 }).strict() as unknown as z.ZodType<SemanticSwitchV1>
+
+/** --- SPEC-05 issue-channel owner records (§12.2 item 2) --- */
+
+export const issueRecordSchema = z.object({
+  recordVersion: z.literal('animalge.issue-record/v1'),
+  issueKey: z.string().min(1),
+  graphId: evidenceGraphIdSchema,
+  severity: z.enum(['attention', 'action_required']),
+  conditionCode: z.string().min(1),
+  targetKind: z.string().min(1),
+  targetId: z.string().min(1),
+  applicableSnapshotDigest: sha256DigestSchema.nullable(),
+  applicableWatermark: safeInteger,
+  firstSeenAt: safeInteger,
+  lastSeenAt: safeInteger,
+  occurrenceCount: safeInteger.min(1),
+  resolvedAt: safeInteger.nullable(),
+}).strict() as unknown as z.ZodType<IssueRecordV1>
+
+export const issueSeenSchema = z.object({
+  recordVersion: z.literal('animalge.issue-seen/v1'),
+  issueKey: z.string().min(1),
+  seenAt: safeInteger,
+}).strict() as unknown as z.ZodType<IssueSeenV1>
 
 export const modelCallSchema = z.object({
   recordVersion: z.literal('animalge.model-call/v1'),

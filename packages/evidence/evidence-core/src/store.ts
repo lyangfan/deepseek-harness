@@ -43,10 +43,13 @@ import {
   storedSnapshotSchema,
   testedEnvironmentRevisionSchema,
   usageSchema,
+  issueRecordSchema,
+  issueSeenSchema,
 } from './schema.ts'
 import type { ArtifactRecord, ArtifactVersionCore, CapturedInvocation, CompileAttempt, CompileOutbox, ContextEntityRecord, EnvironmentStateRecord, GraphRecord, HeadCommit, LocationObservation, QuarantineRecord, QueueClock, ReceiptAcceptanceRecord, ReceiptLaneRecord, ReceiptSubmission, SessionGraphBootstrap, SourceAnchorRecord, StagingRecord, UsageRecord } from './schema.ts'
-import type { CandidateRecordV1, CandidateRelationRecordV1, CandidateStatementId, CompileAttemptId, CurrentHeadV1, EnvironmentStateV1, EvidenceGraphId, EvidenceGraphScopeV1, EvidenceRunId, EvidenceSnapshotPayloadV1, InputBundleV1, ModelCallId, ModelCallRecordV1, ModelRunSelectionRecordV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ProposalValidationRecordV1, RecoveryId, SemanticLaneV1, SemanticSwitchV1, Sha256Digest, StagingId, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
+import type { CandidateRecordV1, CandidateRelationRecordV1, CandidateStatementId, CompileAttemptId, CurrentHeadV1, EnvironmentStateV1, EvidenceGraphId, EvidenceGraphScopeV1, EvidenceRunId, EvidenceSnapshotPayloadV1, InputBundleV1, IssueRecordV1, IssueSeenV1, ModelCallId, ModelCallRecordV1, ModelRunSelectionRecordV1, OutputFinalizationRecordV1, OutputManifestV1, OutputPlanV1, OutputReservationV1, PreflightReportV1, ProposalValidationRecordV1, RecoveryId, SemanticLaneV1, SemanticSwitchV1, Sha256Digest, StagingId, StoredSnapshotV1, TestedEnvironmentRevisionV1 } from './types.ts'
 import { snapshotRecord, verifyStoredSnapshot } from './integrity.ts'
+import { deriveIssues } from './issues.ts'
 
 type CommitKey = `${string}:${number}`
 type ArtifactKey = string
@@ -72,6 +75,16 @@ type CandidateKey = CandidateStatementId
 type CandidateRelationKey = string
 type ModelRunSelectionKey = string
 type ProposalValidationKey = string
+type IssueRecordKey = string
+type IssueSeenKey = string
+
+/**
+ * SPEC-05 §5.2/§6.1: transition-point notifier, installed by the plugin assembly. Called
+ * synchronously inside the serialized queue at head-commit, attempt terminal settle, startup
+ * reconcile, semantic-switch flip, receipt acceptance and markIssuesSeen write points; the
+ * callback schedules its own queued work (issue recompute + evidence/updated emission).
+ */
+export type EvidenceStateNotifier = (graphId: EvidenceGraphId, reason: 'commit' | 'failure' | 'reconcile' | 'switch' | 'acceptance' | 'seen') => void
 
 /** Durable declaration shared by both JSON and SQLite Storage backends. */
 export const evidenceDomainSpec = defineDomain({
@@ -118,6 +131,10 @@ export const evidenceDomainSpec = defineDomain({
     candidate_relations: domainTable<CandidateRelationKey, CandidateRelationRecordV1>(candidateRelationRecordSchema),
     model_run_selections: domainTable<ModelRunSelectionKey, ModelRunSelectionRecordV1>(modelRunSelectionSchema),
     proposal_validations: domainTable<ProposalValidationKey, ProposalValidationRecordV1>(proposalValidationSchema),
+    // SPEC-05 issue-channel owner tables: derived projection + seen timestamps (§12.1); both are
+    // excluded from materialStateDigest and covered by the separate issuesRevision token.
+    issue_records: domainTable<IssueRecordKey, IssueRecordV1>(issueRecordSchema),
+    issue_seen: domainTable<IssueSeenKey, IssueSeenV1>(issueSeenSchema),
   },
 })
 
@@ -193,6 +210,15 @@ export class EvidenceStore {
   get candidateRelations(): KvTable<CandidateRelationKey, CandidateRelationRecordV1> { return this.domain.table('candidate_relations') }
   get modelRunSelections(): KvTable<ModelRunSelectionKey, ModelRunSelectionRecordV1> { return this.domain.table('model_run_selections') }
   get proposalValidations(): KvTable<ProposalValidationKey, ProposalValidationRecordV1> { return this.domain.table('proposal_validations') }
+  get issueRecords(): KvTable<IssueRecordKey, IssueRecordV1> { return this.domain.table('issue_records') }
+  get issueSeen(): KvTable<IssueSeenKey, IssueSeenV1> { return this.domain.table('issue_seen') }
+
+  /** SPEC-05 §5.2/§6.1: installed by the assembly; undefined in bare-store tests. */
+  stateNotifier: EvidenceStateNotifier | undefined
+
+  /** SPEC-05 §11.4-2: installed by the assembly; wakes the compile loop after the backlog
+   * verb lowers a row's eligibility to now (undefined in bare-store tests). */
+  compileWakeNotifier: (() => void) | undefined
 
   /** The semantic lane's only mutable record: single-record atomic update (SPEC-04 §10.1). */
   async updateSemanticLane(
@@ -216,6 +242,7 @@ export class EvidenceStore {
       const next = update(this.semanticSwitch.get(graphId))
       await this.semanticSwitch.put(graphId, next)
       await this.recountNow()
+      this.stateNotifier?.(graphId, 'switch')
       return next
     })
   }
@@ -226,6 +253,68 @@ export class EvidenceStore {
 
   semanticSwitchFor(graphId: EvidenceGraphId): SemanticSwitchV1 | undefined {
     return this.semanticSwitch.get(graphId)
+  }
+
+  /**
+   * SPEC-05 §6.4: the single notification-state write. Idempotent overwrite of `seenAt` for the
+   * given keys, restricted to keys that currently hold an unresolved record in the Session's
+   * Graph; unknown or resolved keys are ignored and reflected in `applied`. Advances
+   * issuesRevision (both issue tables are its input) and fires the transition notifier.
+   */
+  async markIssuesSeenRows(sessionId: SessionId, issueKeys: readonly string[]): Promise<{ applied: readonly string[]; seenAt: number }> {
+    return this.enqueue(async () => {
+      const seenAt = Date.now()
+      const applied: string[] = []
+      const bootstrap = this.sessionGraphs.get(sessionId)
+      if (bootstrap !== undefined) {
+        for (const key of issueKeys) {
+          const record = this.issueRecords.get(key)
+          if (record === undefined || record.graphId !== bootstrap.graphId || record.resolvedAt !== null) continue
+          await this.issueSeen.put(key, { recordVersion: 'animalge.issue-seen/v1', issueKey: key, seenAt })
+          applied.push(key)
+        }
+      }
+      await this.recountNow()
+      if (bootstrap !== undefined) this.stateNotifier?.(bootstrap.graphId, 'seen')
+      return { applied, seenAt }
+    })
+  }
+
+  /**
+   * SPEC-05 §6.1/§6.3: owner-side deterministic issue recompute, serialized with every other
+   * mutation. Active-and-unresolved rows refresh `lastSeenAt`; a condition re-appearing after
+   * resolution starts a new occurrence; a vanished condition resolves its row; records are kept.
+   */
+  async recomputeIssuesFor(graphId: EvidenceGraphId): Promise<void> {
+    await this.enqueue(async () => {
+      const now = Date.now()
+      const derived = deriveIssues(this, graphId, now)
+      const activeKeys = new Set(derived.map(issue => issue.issueKey))
+      for (const issue of derived) {
+        const existing = this.issueRecords.get(issue.issueKey)
+        if (existing === undefined) {
+          await this.issueRecords.put(issue.issueKey, {
+            recordVersion: 'animalge.issue-record/v1', issueKey: issue.issueKey, graphId,
+            severity: issue.severity, conditionCode: issue.conditionCode,
+            targetKind: issue.targetKind, targetId: issue.targetId,
+            applicableSnapshotDigest: issue.applicableSnapshotDigest,
+            applicableWatermark: issue.applicableWatermark,
+            firstSeenAt: now, lastSeenAt: now, occurrenceCount: 1, resolvedAt: null,
+          })
+        } else if (existing.resolvedAt !== null) {
+          await this.issueRecords.put(issue.issueKey, {
+            ...existing, lastSeenAt: now, occurrenceCount: existing.occurrenceCount + 1, resolvedAt: null,
+          })
+        } else {
+          await this.issueRecords.put(issue.issueKey, { ...existing, lastSeenAt: now })
+        }
+      }
+      for (const [key, record] of this.issueRecords.entries()) {
+        if (record.graphId !== graphId || record.resolvedAt !== null || activeKeys.has(key)) continue
+        await this.issueRecords.put(key, { ...record, resolvedAt: now })
+      }
+      await this.recountNow()
+    })
   }
 
   /**
@@ -463,7 +552,12 @@ export class EvidenceStore {
       }
       const graph: GraphRecord = { recordVersion: 'animalge.evidence-graph/v1', scope: intent.initialScope, status: 'ready' }
       if (this.graphs.get(intent.graphId) === undefined) await this.putImmutable(this.graphs, intent.graphId, graph)
-      await this.putImmutable(this.heads, intent.graphId, headAt(intent.graphId))
+      // SPEC-05 §12.2 contract-diff extension (user ruling 2026-08-29 Option A): guard the
+      // head seed the same way as the graph seed — after the first compile advances the head
+      // (rev ≥ 1, digest ≠ null), a subsequent bootstrap must NOT try to overwrite it with the
+      // initial seed (rev=0, digest=null); the unguarded putImmutable rejected with
+      // "different bytes" and silently killed every later-turn captureHeader call.
+      if (this.heads.get(intent.graphId) === undefined) await this.putImmutable(this.heads, intent.graphId, headAt(intent.graphId))
       if (intent.state === 'initializing') {
         intent = await this.sessionGraphs.update(header.id, (current) => {
           if (!sameBytes(current, intent)) throw new EvidenceStoreError('bootstrap_mapping_conflict', `session '${header.id}' bootstrap intent changed`)
@@ -582,6 +676,33 @@ export class EvidenceStore {
     return values.length === 0 ? undefined : Math.min(...values)
   }
 
+  /**
+   * SPEC-05 §11.4-2 owner-side row mutation for the backlog verb: raise the persisted
+   * backlog's priority to runnable-now — the idle-merge window and any retry backoff
+   * collapse to the caller's now, and a terminal failure re-arms from its persisted
+   * compile boundary. A capture-overflow pause (§8.1) is integrity-held and never
+   * user-resumable; a running attempt reports `busy` (the UI's disabled condition).
+   * The write never touches material state (outbox rows are outside materialStateDigest),
+   * never creates captures or attempts, and never runs research tools.
+   */
+  async processBacklogRow(graphId: EvidenceGraphId, now: number): Promise<'triggered' | 'idle' | 'busy' | 'paused'> {
+    return this.enqueue(async () => {
+      const row = this.outbox.get(graphId)
+      if (row === undefined) return 'idle'
+      if (row.overflowed) return 'paused'
+      if (row.inFlightAttemptId !== null && this.attempts.get(row.inFlightAttemptId)?.state === 'running') return 'busy'
+      const updated: CompileOutbox = {
+        ...row,
+        eligibleAfter: Math.min(row.eligibleAfter, now),
+        retryNotBefore: 0,
+        lastQueuedAt: Math.max(row.lastQueuedAt, now),
+      }
+      await this.outbox.put(graphId, updated)
+      await this.recountNow()
+      return 'triggered'
+    })
+  }
+
   async dequeue(row: CompileOutbox, head: CurrentHeadV1, revisions: EvidenceSnapshotPayloadV1['revisions']): Promise<CompileAttempt> {
     return this.enqueue(async () => {
       if (row.inFlightAttemptId !== null) {
@@ -678,6 +799,7 @@ export class EvidenceStore {
           })
           await this.settleCoveredOutbox(attempt)
           await this.recountNow()
+          this.stateNotifier?.(attempt.graphId, 'commit')
           return currentHeadRow
         }
       }
@@ -726,9 +848,11 @@ export class EvidenceStore {
           }).catch(() => {})
           throw new EvidenceStoreError('post_commit_repair_pending', `head '${String(head.snapshotDigest)}'@${head.headRevision} is committed but its history repair is pending`)
         }
+        this.stateNotifier?.(attempt.graphId, 'commit')
         return head
       }
       await this.recountNow()
+      this.stateNotifier?.(attempt.graphId, 'commit')
       return head
     })
   }
@@ -794,6 +918,7 @@ export class EvidenceStore {
         })
       }
       await this.recountNow()
+      this.stateNotifier?.(attempt.graphId, 'failure')
     })
   }
 
@@ -873,6 +998,7 @@ export class EvidenceStore {
   }
 
   async reconcileAttempts(): Promise<void> {
+    const touched = new Set<EvidenceGraphId>()
     await this.enqueue(async () => {
       for (const [graphId, row] of this.outbox.entries()) {
         if (row.inFlightAttemptId === null) continue
@@ -902,6 +1028,7 @@ export class EvidenceStore {
               retryNotBefore: Date.now(),
             })
           }
+          touched.add(graphId)
         } else if (['succeeded', 'failed', 'interrupted', 'cancelled'].includes(attempt.state)) {
           if (attempt.state === 'succeeded' && row.targetNextSeqExclusive <= attempt.targetNextSeqExclusive) await this.outbox.delete(graphId)
           else await this.outbox.put(graphId, { ...row, inFlightAttemptId: null, fairTicket: await this.nextTicketNow() })
@@ -925,9 +1052,11 @@ export class EvidenceStore {
           } else {
             await this.attempts.put(id, { ...attempt, state: 'interrupted', updatedAt: Date.now(), terminalError: { code: 'semantic_interrupted', stage: attempt.stage, retryable: true, messageDigest: sha256Digest('semantic_interrupted') } })
           }
+          touched.add(attempt.graphId)
         }
       }
       await this.recountNow()
+      for (const graphId of touched) this.stateNotifier?.(graphId, 'reconcile')
     })
   }
 
@@ -1020,6 +1149,7 @@ export class EvidenceStore {
       ['model_calls', this.modelCalls], ['candidate_records', this.candidateRecords],
       ['candidate_relations', this.candidateRelations], ['model_run_selections', this.modelRunSelections],
       ['proposal_validations', this.proposalValidations],
+      ['issue_records', this.issueRecords], ['issue_seen', this.issueSeen],
     ]
     let accountedBytes = 0
     let recordCount = 0
@@ -1038,4 +1168,20 @@ export class EvidenceStore {
     await this.usage.put('global', record)
     return record
   }
+}
+
+/** Outcome of the SPEC-05 §11.4-2 backlog verb, mirrored by the read service DTO. */
+export type BacklogOutcome = 'triggered' | 'idle' | 'busy' | 'paused'
+
+/**
+ * SPEC-05 §11.4-2 owner function: "立即处理/重试 Evidence 更新" acts only on the existing
+ * persistent backlog — it raises the row's priority to runnable-now / re-arms from the
+ * persisted compile boundary and wakes the compile loop. It is the second (and last)
+ * non-query owner path beside `markIssuesSeen`; it never executes research tools and is
+ * idempotent (a second call on an already-runnable row is a byte-stable no-op rewrite).
+ */
+export async function processBacklog(store: EvidenceStore, graphId: EvidenceGraphId): Promise<BacklogOutcome> {
+  const outcome = await store.processBacklogRow(graphId, Date.now())
+  if (outcome === 'triggered') store.compileWakeNotifier?.()
+  return outcome
 }

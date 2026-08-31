@@ -217,6 +217,8 @@ export class AcceptanceLane {
     }
     const record = { ...envelope, acceptanceDigest: canonicalDigest(envelope as unknown as JsonValue) }
     await this.store.putMaterialRecord(this.store.receiptAcceptances, envelope.acceptanceId, record)
+    // SPEC-05 §5.2: acceptance-record creation is a transition point (receipt state becomes queryable).
+    this.store.stateNotifier?.(submission.evidenceGraphId, 'acceptance')
   }
 
   /** §7.2 core identity verification + §6.4 component verification; writes one immutable record. */
@@ -244,6 +246,8 @@ export class AcceptanceLane {
     }
     const record: ReceiptAcceptanceRecordV1 = { ...envelope, acceptanceDigest: canonicalDigest(envelope as unknown as JsonValue) }
     await this.store.putMaterialRecord(this.store.receiptAcceptances, record.acceptanceId, record)
+    // SPEC-05 §5.2: acceptance-record creation is a transition point (receipt state becomes queryable).
+    this.store.stateNotifier?.(submission.evidenceGraphId, 'acceptance')
     return accepted ? true : undefined
   }
 

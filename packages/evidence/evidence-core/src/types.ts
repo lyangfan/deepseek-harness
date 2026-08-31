@@ -769,6 +769,42 @@ export interface SemanticSwitchV1 {
   readonly updatedAt: number
 }
 
+/** --- SPEC-05 issue-channel owner records --- */
+
+/** One derived persistent attention item; recomputed owner-side at state-transition points (SPEC-05 §6). */
+export interface IssueRecordV1 {
+  readonly recordVersion: 'animalge.issue-record/v1'
+  readonly issueKey: string
+  readonly graphId: EvidenceGraphId
+  readonly severity: 'attention' | 'action_required'
+  readonly conditionCode: string
+  readonly targetKind: string
+  readonly targetId: string
+  readonly applicableSnapshotDigest: Sha256Digest | null
+  readonly applicableWatermark: number
+  readonly firstSeenAt: number
+  readonly lastSeenAt: number
+  readonly occurrenceCount: number
+  readonly resolvedAt: number | null
+}
+
+/** Notification-seen timestamp; the only markSeen write target (SPEC-05 §6.4). */
+export interface IssueSeenV1 {
+  readonly recordVersion: 'animalge.issue-seen/v1'
+  readonly issueKey: string
+  readonly seenAt: number
+}
+
+/** JSON-safe payload of the forwarded host event (SPEC-05 §5.2; identity/digest/counters only). */
+export interface EvidenceUpdatedEventV1 {
+  readonly sessionId: SessionId
+  readonly graphId: EvidenceGraphId
+  readonly materialStateDigest: Sha256Digest
+  readonly headRevision: number
+  readonly issuesRevision: string
+  readonly currentSnapshotDigest: Sha256Digest | null
+}
+
 /** Immutable per-proposal validation verdict, accepted or rejected with a named code (SPEC-04 §8.1). */
 export interface ProposalValidationRecordV1 {
   readonly recordVersion: 'animalge.proposal-validation/v1'
@@ -779,4 +815,11 @@ export interface ProposalValidationRecordV1 {
   readonly rejectCode: string | null
   readonly summary: JsonValue
   readonly recordedAt: number
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /** SPEC-05 §5.2: forwarded host event carrying the three version tokens (JSON-safe payload). */
+    'evidence/updated': (payload: EvidenceUpdatedEventV1) => void
+  }
 }
