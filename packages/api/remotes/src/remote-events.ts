@@ -16,6 +16,8 @@
  */
 export const API_REMOTE_FORWARDED_EVENTS = [
   'agent-preset/selected',
+  // SPEC-05 §5.2: the Evidence update invalidation hint (version tokens, JSON-safe payload).
+  'evidence/updated',
   'commands/change',
   'credentials/reference-updated',
   'cordis/request-run',

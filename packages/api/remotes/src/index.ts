@@ -11,6 +11,8 @@ import type {} from '@deepseek-ai/dsh-commands/types'
 import type {} from '@deepseek-ai/dsh-cordis-host-runner/types'
 import type {} from '@deepseek-ai/dsh-credentials/types'
 import type {} from '@deepseek-ai/dsh-llm/types'
+// SPEC-05 §5.2: the evidence owner's client-safe types carry the 'evidence/updated' declaration.
+import type {} from '@deepseek-ai/dsh-evidence-core/types'
 import type {} from '@deepseek-ai/dsh-agent-presets/types'
 import type {} from '@deepseek-ai/dsh-settings/types'
 

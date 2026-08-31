@@ -10,6 +10,7 @@ import type {
   ObservableSnapshot, PendingInteraction, PendingWait, SessionId, ToolCallBlock,
   TurnLocation, WorkspaceId,
 } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ViewNavigationFace } from '@deepseek-ai/dsh-client-runtime/client'
 import type { MarkdownFileMentions } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MessageId } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
@@ -492,6 +493,8 @@ export interface ConversationSessionInjected {
     subscribe: (fn: () => void) => () => void
     version: () => number
   }
+  /** SPEC-05 §10.4: the exact-navigation seam, when the runtime provides it (null in tests). */
+  navigation: ViewNavigationFace | null
   /** Release historical image URLs when this rendered session scope unmounts. */
   releaseSessionImages: (sessionId: SessionId) => void
   /** Bind the input machine's draft persistence mirror to the session store. */

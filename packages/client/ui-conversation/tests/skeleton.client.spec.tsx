@@ -199,6 +199,7 @@ function mount(
           actions={chat.actions}
           renderSlot={renderSlot as never}
           views={views}
+          navigation={null}
           releaseSessionImages={vi.fn()}
           bindDraftMirror={write => wiring.bindMirror(write)}
         />

@@ -60,6 +60,19 @@
       name: '@deepseek-ai/dsh-storage-domain'
       config:
         backend: json
+    # SPEC-05 §12.2-7: the Evidence owner + read service enter the web host with the minimal
+    # legal inert config — 'animalge-open' is the SPEC-07 preset id; no default-composition
+    # session mounts it, so evidence stays dormant until a later bundle owns eligibility.
+    - id: evidence-core
+      name: '@deepseek-ai/dsh-evidence-core'
+      config:
+        eligibleAgentPresetIds: ['animalge-open']
+        deterministicRunSelection:
+          revision: animalge-open-default/v1
+          exactToolNames: []
+
+    - id: evidence-service
+      name: '@deepseek-ai/dsh-evidence-service'
 
     - id: message-feedback
       name: '@deepseek-ai/dsh-message-feedback'
@@ -293,6 +306,10 @@
 
     - id: ui-trajectory
       name: '@deepseek-ai/dsh-client-ui-trajectory'
+
+    # SPEC-05: the Evidence read view tab, header status entry, and tool-card links.
+    - id: ui-evidence
+      name: '@deepseek-ai/dsh-client-ui-evidence'
 
 # ── the agent plane moves behind agent presets ─────────────────────────────
 #

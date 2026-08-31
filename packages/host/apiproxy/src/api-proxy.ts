@@ -70,6 +70,8 @@ import { GoalError } from '@deepseek-ai/dsh-goal'
 import type { GoalRef as CoreGoalRef } from '@deepseek-ai/dsh-goal'
 // Type-only edges: resolve the command-change stream and `ctx.get('skills')`.
 import type {} from '@deepseek-ai/dsh-commands'
+// SPEC-05 §5.2 (via §12.2-5): the evidence owner's types carry 'evidence/updated' for the forwarding loop.
+import type {} from '@deepseek-ai/dsh-evidence-core/types'
 // Type-only: the dynamic-package runner's forwarded-event declarations. Its
 // client-safe `./types` subpath deliberately, not the package root — the root
 // merges `ctx.dynamicCordisRunner`, and a dependency on that package would

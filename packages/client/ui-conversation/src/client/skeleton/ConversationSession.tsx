@@ -7,6 +7,7 @@ import type {
   ConversationSessionHeaderSlotProps, ConversationSessionSlotProps,
 } from '../contract/slots.ts'
 import type { ViewTab } from '../contract/views.ts'
+import type { ViewActivation } from '@deepseek-ai/dsh-client-runtime/client'
 import css from './ConversationRoot.module.css'
 
 /** Full props composed from the strict session body contract. */
@@ -22,6 +23,11 @@ interface Breadcrumb {
 }
 
 const DEFAULT_VIEW_ID = 'chat'
+
+/** Stable no-op unsubscribe for compositions without the navigation seam. */
+const constantUnsubscribe = (): (() => void) => () => {}
+/** Stable null snapshot for the same case. */
+const constantNullSnapshot = (): ViewActivation | null => null
 
 /** Resolve by id and keep stale persisted selections on the stable Chat fallback. */
 function resolveActiveView(tabs: readonly ViewTab[], selectedId: string | null): ViewTab | undefined {
@@ -172,12 +178,28 @@ export function ConversationSessionHeader({
  */
 export function ConversationSession({
   sessionId, useSession, useInput, inputActions, useStore, actions,
-  renderSlot, views, bindDraftMirror, releaseSessionImages,
+  renderSlot, views, navigation, bindDraftMirror, releaseSessionImages,
 }: ConversationSessionProps) {
   useSyncExternalStore(views.subscribe, views.version)
   const tabs = views.list()
   const selectedId = useStore(s => s.view)
   const active = resolveActiveView(tabs, selectedId)
+  // SPEC-05 §10.4: exact-navigation activations drive the existing active-view store and the
+  // inspect-style owner-props path; view/slot semantics are untouched.
+  const activation = useSyncExternalStore(
+    navigation === undefined || navigation === null ? constantUnsubscribe : navigation.subscribe.bind(navigation),
+    navigation ? () => navigation.activationFor(sessionId) : constantNullSnapshot,
+  )
+  useEffect(() => {
+    if (activation === null || activation.viewId === selectedId) return
+    actions.setView(activation.viewId)
+  }, [activation, selectedId, actions])
+  const toolCallFocus = activation?.focus !== undefined && activation.focus !== null && activation.focus.kind === 'tool_call'
+    && selectedId === 'chat' ? activation.focus : null
+  useEffect(() => {
+    if (toolCallFocus === null) return
+    actions.setInspect({ callId: toolCallFocus.callId })
+  }, [toolCallFocus, actions])
   const composerPhase = useSession(s => s.composerPhase)
   const blank = useSession(s => s.blank)
   const inputState = useInput(s => s)

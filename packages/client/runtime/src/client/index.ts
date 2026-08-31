@@ -24,6 +24,8 @@ export { ConversationViewRegistry } from './conversation/view-registry.ts'
 export { ConversationNodeAssembler } from './sessions/conversation-assembler.ts'
 export { ConversationLocationIndex } from './sessions/conversation-location-index.ts'
 export { conversationContextKey } from './contract/conversation.ts'
+export type { ViewFocus, ViewActivation, ViewNavigationFace } from './contract/view-navigation.ts'
+export { ViewNavigationService } from './view-navigation.ts'
 export type {
   ChatConversationViewNode, ConversationContextReader, ConversationEventInput,
   ConversationLocationData, ConversationLocationDataScope, ConversationLocationDataStore,
@@ -71,6 +73,7 @@ export { createSnapshotStore, defineStore, shallowEqual } from './contract/store
 export type {
   EngineStoreHandle, EngineStoreInstance, ObservableSnapshot, SnapshotStore,
 } from './contract/store.ts'
+import { ViewNavigationService } from './view-navigation.ts'
 export type {
   AssistantBlock, AssistantMessageNode, AssistantProvenanceView, AssistantRequestConfig,
   AssistantTiming, ChatLocationNodeIndex, ChatNodeStore, ChatSnapshot,
@@ -187,6 +190,8 @@ export const inject = ['connection', 'typert', 'remote', 'remote.commands']
  */
 export function apply(ctx: Context): void {
   ctx.plugin(SlotRegistry)
+  // SPEC-05 §12.2-8: the D-136-authorized exact-navigation seam (neutral activation state).
+  ctx.plugin(ViewNavigationService)
   const conversation = {
     events: new ConversationEventRegistry(ctx),
     views: new ConversationViewRegistry(ctx),

@@ -247,6 +247,8 @@ export function apply(ctx: Context): void {
       const conversation = concreteConversation(ctx)
       return {
         views,
+        // SPEC-05 §10.4: absent seam (bare test compositions) degrades to null, never blocks.
+        navigation: ctx.get('viewNavigation') ?? null,
         releaseSessionImages: (id) => { conversation.releaseSessionImages(id) },
         bindDraftMirror: write => inputHub.shell(sessionId).bindMirror(write),
       }

@@ -3,6 +3,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import commandsRemote from '@deepseek-ai/dsh-commands/remote'
 import goalsRemote from '@deepseek-ai/dsh-goal/remote'
+import evidenceRemote from '@deepseek-ai/dsh-evidence-service/remote'
 import dynamicRemote from '@deepseek-ai/dsh-cordis-host-runner/remote'
 import fileReferencesRemote from '@deepseek-ai/dsh-file-reference/remote'
 import pluginInventoryRemote from '@deepseek-ai/dsh-host-plugin-inventory/remote'
@@ -15,6 +16,8 @@ export type { PluginInventorySnapshot } from '@deepseek-ai/dsh-host-plugin-inven
 export type {} from '@deepseek-ai/dsh-commands/remote'
 export type {} from '@deepseek-ai/dsh-file-reference/remote'
 export type {} from '@deepseek-ai/dsh-goal/remote'
+// SPEC-05 §12.2-6: the evidence namespace merge (ctx.remote.evidence).
+export type {} from '@deepseek-ai/dsh-evidence-service/remote'
 export type {} from '@deepseek-ai/dsh-host-plugin-inventory/remote'
 export type {} from '@deepseek-ai/dsh-message-feedback/remote'
 export type {} from '@deepseek-ai/dsh-session-reference/remote'
@@ -116,6 +119,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     for (const contribution of [
       commandsRemote, goalsRemote, dynamicRemote, fileReferencesRemote,
       pluginInventoryRemote, messageFeedbackRemote, sessionReferencesRemote,
+      evidenceRemote,
     ]) {
       disposers.push(await ctx.remote.$mount(contribution))
     }
